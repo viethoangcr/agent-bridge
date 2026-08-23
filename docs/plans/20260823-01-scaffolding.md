@@ -18,14 +18,15 @@ Create the dependency-free Go 1.26 repository and production server foundation o
 - The module path is `github.com/viethoangcr/agent-bridge`, matching the repository location.
 - Phase 01 uses only the Go standard library. `modernc.org/sqlite` is deliberately added in Phase 02, not here.
 - `AGENT_BRIDGE_INTERNAL_MOCK_AGENT=1` selects an internal execution path before HTTP configuration, listener creation, or PID-file creation. Phase 01 establishes and tests this dispatch seam; Phase 02 replaces the temporary `internal mock agent is not implemented` result with the private JSONL loop.
-- Durations parsed from `*_MS` variables are base-10 integers interpreted as milliseconds. `AGENT_BRIDGE_ACP_REQUEST_TIMEOUT_MS` must be positive; `AGENT_BRIDGE_IDLE_TTL_MS` is non-negative and `0` disables reaping. Invalid values fail startup; no silent fallback is permitted.
+- Durations parsed from `*_MS` variables are base-10 integers interpreted as milliseconds. Parsing must reject values whose checked millisecond-to-`time.Duration` conversion would overflow. `AGENT_BRIDGE_ACP_REQUEST_TIMEOUT_MS` is in `1ms..1h`; `AGENT_BRIDGE_IDLE_TTL_MS` is in `0..30d`, where `0` disables reaping. Invalid or out-of-range values fail startup; no silent fallback is permitted. Phase 04 owns its process-specific timeout and byte-count bounds, but must use this phase's checked parsing conventions rather than unchecked multiplication.
 - `AGENT_BRIDGE_PORT` is an integer in `1..65535`. `AGENT_BRIDGE_LOG_LEVEL` accepts `debug`, `info`, `warn`, or `error` case-insensitively and stores the normalized lowercase value.
+- Remote unauthenticated listening is forbidden by default. Startup fails when `AGENT_BRIDGE_HOST` is not provably loopback and `AGENT_BRIDGE_TOKEN` is empty unless `AGENT_BRIDGE_ALLOW_INSECURE_REMOTE=1`. Loopback means an IP for which `net.IP.IsLoopback` is true or the exact case-insensitive hostname `localhost`; unknown hostnames are treated as remote. The override accepts only empty/`0` or `1`, is never inherited by children, and must be documented as unsafe.
 - PID-file content is the decimal PID followed by `\n`; creation uses mode `0600` and fails rather than replacing an existing file. Removal ignores only `os.ErrNotExist`.
 - Later phases register ACP, managed-process, and database cleanup functions in the same shutdown registry. This phase must not predeclare those implementations.
 
 ## Scope Boundaries
 
-**Included:** module/repository files, environment parsing, shared child-environment sanitization, private dispatch seam, extensible HTTP server/router, root/health handlers, custom 404/405 problems, auth middleware, JSON/body-limit utilities, request logging, PID-file lifecycle, signal handling, cleanup registry, Makefile, README skeleton, and project `AGENTS.md`.
+**Included:** module/repository files, environment parsing, shared child-environment sanitization, private dispatch seam, extensible HTTP server/router, root/health handlers, custom 404/405 problems, auth middleware, JSON/body-limit utilities, request logging, PID-file lifecycle, signal handling, staged lifecycle registries, Makefile, README skeleton, and project `AGENTS.md`.
 
 **Excluded:** SQLite and `modernc.org/sqlite`, ACP schema/store/runtime/proxy/handlers/SSE, agent resolution or launch, process API, filesystem/config APIs, image packaging, telemetry, daemon mode, and public CLI subcommands.
 
@@ -45,6 +46,7 @@ type Config struct {
 	LogLevel          slog.Level
 	DBPath            string
 	Token             string
+	AllowInsecureRemote bool
 	PIDFile           string
 	ACPRequestTimeout time.Duration
 	IdleTTL           time.Duration
@@ -55,7 +57,7 @@ func Load(getenv func(string) string) (Config, error)
 func (c Config) Address() string
 ```
 
-`Load` owns defaults and validation for all startup variables already defined by the master contract, including agent binary/JSON-array argument overrides. It must copy argument slices and return errors naming the invalid environment variable without exposing secret values.
+`Load` owns defaults and validation for all startup variables already defined by the master contract, including agent binary/JSON-array argument overrides and the remote-auth guard. It must copy argument slices and return errors naming the invalid environment variable without exposing secret values.
 
 ### `internal/httpapi`
 
@@ -81,7 +83,7 @@ func WriteProblem(w http.ResponseWriter, p Problem)
 func DecodeJSON(w http.ResponseWriter, r *http.Request, limit int64, dst any) bool
 ```
 
-`Server` owns the `http.ServeMux`, route registration, and composed auth/logging handler so later phases extend `server.go` instead of replacing a phase-local router constructor. `Handler` returns the stable fully wrapped handler. `Problem.Ext` is flattened into top-level JSON members, but extension keys may not replace `type`, `title`, `status`, or `detail`. `DecodeJSON` is the sole foundation for bounded JSON routes: install `http.MaxBytesReader`, reject malformed/trailing JSON, map `*http.MaxBytesError` to 413, and emit problems itself.
+`Server` owns the Phase 01 `http.ServeMux` and consumes already-constructed dependencies; it must not construct stores, runtimes, reapers, or other services. `Handler` returns the stable fully wrapped handler. Phase 06 owns the final `Dependencies` shape and route composition after parallel Phases 02-05. `Problem.Ext` is flattened into top-level JSON members, but extension keys may not replace `type`, `title`, `status`, or `detail`. `DecodeJSON` is the sole foundation for bounded JSON routes: install `http.MaxBytesReader`, reject malformed/trailing JSON, map `*http.MaxBytesError` to 413, and emit problems itself. The `application/problem+json` guarantee applies to requests that reach bridge handlers or middleware; malformed request lines, invalid headers, header-size failures, and other `net/http` transport/parser rejections are explicit exceptions.
 
 ### `internal/childenv`
 
@@ -89,7 +91,7 @@ func DecodeJSON(w http.ResponseWriter, r *http.Request, limit int64, dst any) bo
 func Sanitized(environ []string) []string
 ```
 
-`Sanitized` returns a fresh environment slice with every occurrence of `AGENT_BRIDGE_TOKEN`, `AGENT_BRIDGE_PID_FILE`, and `AGENT_BRIDGE_INTERNAL_MOCK_AGENT` removed. It splits entries only at the first `=`, preserves order and all unrelated values, and is the only child-environment sanitizer used by ACP and managed-process phases.
+`Sanitized` returns a fresh environment slice with every occurrence of `AGENT_BRIDGE_TOKEN`, `AGENT_BRIDGE_PID_FILE`, `AGENT_BRIDGE_INTERNAL_MOCK_AGENT`, and `AGENT_BRIDGE_ALLOW_INSECURE_REMOTE` removed. It splits entries only at the first `=`, preserves order and all unrelated values, and is the only child-environment sanitizer used by ACP and managed-process phases.
 
 ### `internal/lifecycle`
 
@@ -102,7 +104,7 @@ func (r *Registry) Add(name string, cleanup Cleanup) error
 func (r *Registry) Shutdown(ctx context.Context) error
 ```
 
-Registration is rejected after shutdown starts. `Shutdown` invokes every registered cleanup once in reverse registration order, continues after errors, and returns `errors.Join` output. The implementation must be race-safe and idempotent.
+Registration is rejected after shutdown starts. `Shutdown` invokes every registered hook once in reverse registration order, continues after errors, and returns `errors.Join` output. The implementation must be race-safe and idempotent. `internal/app` uses separate instances for pre-drain hooks and post-drain cleanup; a single registry must not obscure the stage boundary.
 
 ### `internal/app`
 
@@ -116,7 +118,13 @@ type IO struct {
 func Run(ctx context.Context, getenv func(string) string, io IO) error
 ```
 
-`Run` checks private mock dispatch first, then loads configuration, starts the listener, writes the PID file, serves HTTP, and coordinates a maximum ten-second graceful shutdown. Private helpers include `runInternalMockAgent(context.Context, IO) error`, `writePIDFile(string) error`, and `removePIDFile(string) error`.
+`Run` checks private mock dispatch first, then loads configuration and constructs all services in `internal/app`, starts the listener, writes the PID file, serves HTTP, and coordinates a maximum ten-second graceful shutdown. On cancellation it uses one absolute deadline, independent of the already-canceled run context: close the listener to stop acceptance; invoke pre-drain hooks that close SSE streams, stop reapers, and signal-and-wait termination of ACP/managed process groups, including process reap and pump completion; call `http.Server.Shutdown` so now-unblocked active handlers can finish; invoke post-drain hooks that idempotently confirm process/pump completion, wait any non-process commit work, and checkpoint/close the database; finally remove the PID file. Every stage receives a fresh context with the same remaining absolute deadline, never a new ten-second budget. Phase 01 implements and tests the staging seam; Phase 06 finalizes hook ownership for integrated services. Private helpers include `runInternalMockAgent(context.Context, IO) error`, `writePIDFile(string) error`, and `removePIDFile(string) error`.
+
+## Test-First Evidence Policy
+
+- RED must be a failing behavioral assertion against the smallest compilable seam, fake, injected clock, or injected limit feasible for the task. A missing file, package, or symbol is useful setup evidence but is not sufficient RED evidence by itself.
+- Time and size behavior must be tested with injected clocks/deadlines and small configurable limits. Test an actual maximum boundary once where conversion or protocol compatibility requires it; do not repeatedly allocate huge payloads or wait for production-duration timers.
+- GREEN retains the focused behavioral command and assertion output, not merely successful compilation.
 
 ## Ordered Atomic Tasks
 
@@ -133,7 +141,7 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error
 **Strict test-first steps:**
 
 - [ ] Add `cmd/agent-bridge/main_test.go` asserting the command package is buildable and that cancellation is translated to a clean return through an injected/context-driven app path once implemented.
-- [ ] **RED evidence:** Run `go test ./cmd/agent-bridge`; retain output showing compilation fails because `internal/app`/`Run` does not exist. A test that passes before production code is not acceptable RED evidence.
+- [ ] Add the smallest compilable injected app-run seam, then **RED evidence:** run `go test ./cmd/agent-bridge` and retain the failing cancellation/exit assertion. Any earlier missing-`internal/app` compilation failure is setup evidence only.
 - [ ] Create `go.mod` with `go 1.26`, the module path above, and no `require` entries; add `main.go` using `signal.NotifyContext` for `os.Interrupt` and `syscall.SIGTERM`, invoking `app.Run` once and exiting nonzero only for a returned startup/runtime error.
 - [ ] Add `Makefile` targets `test`, `lint`, `build`, and `check`; use `CGO_ENABLED=0 go build -trimpath -o bin/agent-bridge ./cmd/agent-bridge`, `go vet ./...`, and `go test ./...` without external tools.
 - [ ] **GREEN evidence:** Run `go test ./cmd/agent-bridge` and record `ok`; run `CGO_ENABLED=0 go build ./cmd/agent-bridge` and record exit status 0.
@@ -158,11 +166,12 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error
 
 **Strict test-first steps:**
 
-- [ ] Write table-driven tests for empty-environment defaults: host `127.0.0.1`, port `2468`, level `info`, DB `./agent-bridge.db`, request timeout `120000ms`, idle TTL `900000ms`, empty token/PID file, and the exact three default agent commands.
-- [ ] Add tests for every override, JSON argument arrays (including spaces and empty strings), defensive argument-slice ownership, idle TTL `0`, and normalized log levels.
-- [ ] Add rejection tests for malformed/out-of-range ports, zero/negative/non-integer request timeout, negative/non-integer idle TTL, unsupported log levels, non-array args, non-string args, and malformed JSON; assert errors name the responsible variable.
-- [ ] **RED evidence:** Run `go test ./internal/config`; retain the undefined-symbol/build failure for `Load` and `Config`.
-- [ ] Implement parsing with `strconv`, `encoding/json`, `time.Duration`, `net.JoinHostPort`, and `log/slog`; do not read `os.Getenv` inside this package.
+- [ ] Write table-driven tests for empty-environment defaults: host `127.0.0.1`, port `2468`, level `info`, DB `./agent-bridge.db`, request timeout `120000ms`, idle TTL `900000ms`, empty token/PID file, disabled insecure-remote override, and the exact three default agent commands.
+- [ ] Add tests for every override, JSON argument arrays (including spaces and empty strings), defensive argument-slice ownership, idle TTL `0`, normalized log levels, loopback hosts without a token, and authenticated non-loopback hosts.
+- [ ] Add rejection tests for malformed/out-of-range ports; request timeout `0`, negative, over `1h`, non-integer, or conversion overflow; idle TTL negative, over `30d`, non-integer, or conversion overflow; unsupported log levels; non-array/non-string/malformed agent args; invalid insecure-remote flags; and empty-token non-loopback hosts without the override. Assert errors name the responsible variable without containing token values.
+- [ ] Add explicit safety tests that `0.0.0.0`, `::`, and unknown hostnames require a token, `127.0.0.1`, `::1`, and case-insensitive `localhost` do not, and only `AGENT_BRIDGE_ALLOW_INSECURE_REMOTE=1` permits the unsafe case.
+- [ ] Add a minimal `Load` seam returning unchecked/default values, then **RED evidence:** run `go test ./internal/config -run TestLoad` and retain behavioral failures for bounds and remote-auth policy. Undefined symbols are setup evidence only.
+- [ ] Implement parsing with `strconv`, `encoding/json`, checked integer bounds before `time.Duration(ms)*time.Millisecond`, `net.IP.IsLoopback`, `net.JoinHostPort`, and `log/slog`; do not read `os.Getenv` inside this package.
 - [ ] **GREEN evidence:** Run `go test ./internal/config -run TestLoad -count=1`; record all cases passing.
 
 **Verification:** `go test ./internal/config -count=1`
@@ -185,9 +194,9 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error
 
 **Strict test-first steps:**
 
-- [ ] Test removal of all occurrences of the three bridge-only variables, including duplicate keys, empty values, entries without `=`, and values containing additional `=` characters.
+- [ ] Test removal of all occurrences of the four bridge-only variables, including duplicate keys, empty values, entries without `=`, and values containing additional `=` characters.
 - [ ] Test that credential-shaped and unrelated variables remain in original order and that mutating either input or output after the call cannot mutate the other slice.
-- [ ] **RED evidence:** Run `go test ./internal/childenv`; retain compilation failure because `Sanitized` is undefined.
+- [ ] Add a minimal pass-through `Sanitized` seam, then **RED evidence:** run `go test ./internal/childenv` and retain failures showing bridge-only variables remain or slice ownership is violated. Missing-symbol failure is setup evidence only.
 - [ ] Implement one linear pass using `strings.Cut`, copying retained strings into a newly allocated slice; do not read `os.Environ` inside the helper.
 - [ ] **GREEN evidence:** Re-run `go test ./internal/childenv -count=1` and record all removal/order/ownership cases passing.
 
@@ -214,7 +223,7 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error
 - [ ] Test exact `application/problem+json` content type and required fields for representative 400, 404, 405, 413, and 500 responses.
 - [ ] Test flattened extension members and reserved-key protection.
 - [ ] Test `DecodeJSON` for one valid object, malformed JSON, an empty body, a second JSON value/trailing bytes, exact-limit success, and over-limit 413. Decode failures must return `false` and produce a problem response.
-- [ ] **RED evidence:** Run `go test ./internal/httpapi -run 'Test(WriteProblem|DecodeJSON)'`; retain undefined-symbol failures.
+- [ ] Add minimal compilable response/decoder seams, then **RED evidence:** run `go test ./internal/httpapi -run 'Test(WriteProblem|DecodeJSON)'` and retain failing status/content-type/body-limit assertions. Missing-symbol failures are setup evidence only.
 - [ ] Implement with `encoding/json`, `http.MaxBytesReader`, `errors.As` for `*http.MaxBytesError`, and one EOF check after the first decoded value. Do not buffer an unbounded body.
 - [ ] **GREEN evidence:** Re-run the focused command and record `ok`, including the over-limit case reporting status 413 and RFC 9457 JSON.
 
@@ -240,7 +249,7 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error
 
 - [ ] Test unset-token pass-through; configured-token success; missing, wrong, malformed, empty, duplicate, and wrong-scheme Authorization values; and public root bypass.
 - [ ] Assert failures are 401 RFC 9457 responses and do not reflect either supplied or configured token. Assert ACP-looking JSON-RPC bodies do not alter auth failure semantics.
-- [ ] **RED evidence:** Run `go test ./internal/httpapi -run TestAuthenticate`; retain the undefined `authenticate` failure.
+- [ ] Add a minimal pass-through middleware seam, then **RED evidence:** run `go test ./internal/httpapi -run TestAuthenticate` and retain failing unauthorized-request assertions. Missing-symbol failure is setup evidence only.
 - [ ] Implement exact `Bearer <token>` parsing and compare expected/supplied byte strings with `crypto/subtle.ConstantTimeCompare`; avoid logging or placing Authorization in context.
 - [ ] **GREEN evidence:** Re-run the focused test and record all auth cases passing.
 
@@ -254,7 +263,7 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error
 
 ### Task 1.6: Build Extensible HTTP Server, Root/Health Routes, and Custom 404/405 Handling
 
-**Description:** Construct `httpapi.Server` around the Go 1.26 `ServeMux`, explicit method/path patterns, composed middleware, and custom problem fallbacks. Later phases add routes through the same server implementation rather than introducing parallel routers.
+**Description:** Construct the foundation `httpapi.Server` around the Go 1.26 `ServeMux`, explicit method/path patterns, composed middleware, and custom problem fallbacks. It consumes dependencies supplied by `internal/app`; Phase 06 composes the final routes from Phases 02-05 rather than allowing `httpapi` to construct services.
 
 **Files:** `internal/httpapi/server.go`, `internal/httpapi/server_test.go`
 
@@ -268,7 +277,7 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error
 - [ ] Assert exact success JSON shapes, root's public behavior with auth enabled, health's required auth, `Allow: GET` on 405, and RFC 9457 bodies/content types for 404/405.
 - [ ] Add path tests proving `/v1/health/extra` and `/unknown` are 404 rather than accidentally matched by a subtree handler.
 - [ ] Test `NewServer(...).Handler()` as the only public HTTP assembly path and assert repeated `Handler` calls return the same composed handler.
-- [ ] **RED evidence:** Run `go test ./internal/httpapi -run TestServer`; retain failure because `Server`/`NewServer` is undefined.
+- [ ] Add the smallest compilable server returning an empty handler, then **RED evidence:** run `go test ./internal/httpapi -run TestServer` and retain failing route/auth/problem assertions. Missing-symbol failure is setup evidence only.
 - [ ] Register `GET /` and `GET /v1/health` method/path patterns on the server-owned mux. Register methodless known-path fallbacks for 405 and a final `/` fallback that returns 405 only for the exact root path and 404 otherwise. Compose `/v1/*` auth once without buffering responses, preserving future SSE compatibility.
 - [ ] **GREEN evidence:** Re-run the focused test; record every status/content-type/Allow assertion passing.
 
@@ -294,7 +303,7 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error
 
 - [ ] Capture JSON slog output and test a success plus a problem response for `method`, full request URI, final status, and non-negative `latency_ms`.
 - [ ] Send a distinctive Authorization value and assert it is absent from the entire captured log payload. Test an implicit handler status is recorded as 200 and optional interfaces needed by streaming are not blocked.
-- [ ] **RED evidence:** Run `go test ./internal/httpapi -run TestRequestLogger`; retain undefined-symbol failure.
+- [ ] Add a minimal pass-through logger seam, then **RED evidence:** run `go test ./internal/httpapi -run TestRequestLogger` and retain failures for status/latency fields or secret absence. Missing-symbol failure is setup evidence only.
 - [ ] Implement a minimal status-capturing writer and preserve `http.Flusher`; do not log request or response headers/bodies. Install logging once as the outer `Server.Handler` middleware.
 - [ ] **GREEN evidence:** Re-run the focused test and retain passing output plus the explicit secret-absence assertion.
 
@@ -318,9 +327,9 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error
 
 **Strict test-first steps:**
 
-- [ ] Test reverse-order execution, exactly-once behavior under concurrent `Shutdown` calls, continued cleanup after an error, joined error identity, context propagation, and rejection of late registration.
+- [ ] Test reverse-order execution, exactly-once behavior under concurrent `Shutdown` calls, continued cleanup after an error, joined error identity, context propagation, and rejection of late registration. Use channels/fakes rather than real elapsed-time waits.
 - [ ] Run race-sensitive test iterations to expose duplicate callbacks or map/slice races.
-- [ ] **RED evidence:** Run `go test -race ./internal/lifecycle`; retain undefined-type failures.
+- [ ] Add a minimal compilable registry that does not yet enforce ordering/idempotence, then **RED evidence:** run `go test -race ./internal/lifecycle` and retain the behavioral ordering or duplicate-callback failure. Undefined-type failure is setup evidence only.
 - [ ] Implement with `sync.Mutex` and a completion channel or equivalent standard-library synchronization; invoke callbacks outside the lock and publish one shared result.
 - [ ] **GREEN evidence:** Run `go test -race ./internal/lifecycle -count=20`; record all iterations passing without race reports.
 
@@ -347,9 +356,10 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error
 - [ ] Test that `AGENT_BRIDGE_INTERNAL_MOCK_AGENT=1` bypasses invalid HTTP environment configuration, does not bind a port or create a PID file, and returns the temporary phase-boundary error from the private hook.
 - [ ] Test PID mode/content, refusal to replace an existing file, cleanup on context cancellation, no file after bind failure, and no failure when cleanup finds an already-removed file.
 - [ ] Start `Run` against `127.0.0.1` with a test-selected free port; assert health serves, cancel context, assert return within ten seconds, and assert a subsequent bind to the same address succeeds.
-- [ ] Test a registered cleanup error is logged/returned only after all callbacks run, while context cancellation and `http.ErrServerClosed` alone are clean.
-- [ ] **RED evidence:** Run `go test ./internal/app`; retain undefined `Run`/PID helper failures.
-- [ ] Implement mode check before `config.Load`; create `slog.Logger`, `net.Listen`, `httpapi.NewServer(...).Handler()`, `http.Server`, and PID file; register PID removal; call `http.Server.Shutdown` under a ten-second timeout when context ends; then execute the registry. Configure finite `ReadHeaderTimeout` and no global write timeout that would break future SSE.
+- [ ] Test a registered hook error is logged/returned only after every hook in that stage runs, while context cancellation and expected listener/server closure alone are clean.
+- [ ] With fakes/channels and an injected shutdown budget/deadline source, assert exact ordering: listener close; pre-drain closes streams/stops reapers and signal-and-wait termination completes process reap and pumps; `http.Server.Shutdown`; post-drain idempotently confirms completion, waits non-process commits, and checkpoints/closes DB; PID removal. Assert an open streaming handler is explicitly closed by pre-drain before `Shutdown` waits, and each stage sees the same absolute deadline with decreasing remaining time rather than a reset budget.
+- [ ] Add a minimal compilable `Run` lifecycle seam, then **RED evidence:** run `go test ./internal/app` and retain failures for PID lifecycle, remote-auth startup rejection, or staged shutdown ordering. Undefined helpers are setup evidence only.
+- [ ] Implement mode check before `config.Load`; create `slog.Logger`, `net.Listen`, app-owned services, `httpapi.NewServer(...).Handler()`, `http.Server`, and PID file. On cancellation create one ten-second absolute deadline from a non-canceled parent, close the listener, run pre-drain signal-and-wait process termination through pump completion, call `http.Server.Shutdown`, run post-drain idempotent confirmation/non-process commit/DB cleanup, and remove the PID file last. Pass contexts carrying the same deadline to every stage, continue best-effort after bounded errors, and normalize expected listener closure. Configure finite `ReadHeaderTimeout` and no global write timeout that would break future SSE.
 - [ ] Update `main` to treat cancellation-driven clean shutdown as exit 0 and print startup/runtime errors to stderr without dumping configuration or token values.
 - [ ] **GREEN evidence:** Run `go test -race ./internal/app -count=10`; retain passing lifecycle/PID assertions and no race output.
 
@@ -374,9 +384,9 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error
 **Strict test-first steps:**
 
 - [ ] Add `internal/projectdocs/projectdocs_test.go` that reads repository-root `README.md`, `AGENTS.md`, and `Makefile`, asserting the documented build/test commands and required Go/static/no-extra-dependency rules exist. Use only standard-library testing.
-- [ ] **RED evidence:** Run `go test ./internal/projectdocs`; retain failure reporting missing `README.md`/`AGENTS.md`.
-- [ ] Write a README skeleton with purpose, current phase status, prerequisites, `make check`, `make build`, environment table, auth/root/health examples, and a pointer to the authoritative specification. Do not advertise unfinished APIs or the private mock agent.
-- [ ] Write project `AGENTS.md` requiring master-contract precedence, numeric phase order, stdlib plus only `modernc.org/sqlite`, strict test-first evidence, `CGO_ENABLED=0`, RFC 9457 errors, no public mock interface, no runtime installs, and no expansion into excluded features.
+- [ ] Create minimal placeholder documents if absent, then **RED evidence:** run `go test ./internal/projectdocs` and retain failing assertions for missing required commands, environment safety, or repository rules. Missing files alone are setup evidence only.
+- [ ] Write a README skeleton with purpose, current phase status, prerequisites, `make check`, `make build`, environment table, auth/root/health examples, the non-loopback token requirement and unsafe override warning, and a pointer to the authoritative specification. Do not advertise unfinished APIs or the private mock agent.
+- [ ] Write project `AGENTS.md` requiring master-contract precedence, numeric phase order, stdlib plus only `modernc.org/sqlite`, behavioral test-first evidence, injected clocks/limits, `CGO_ENABLED=0`, handler-level RFC 9457 errors, no public mock interface, no runtime installs, and no expansion into excluded features.
 - [ ] **GREEN evidence:** Re-run the docs test and record `ok`.
 
 **Verification:** `go test ./internal/projectdocs -count=1 && make check`
@@ -406,17 +416,18 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error
 
 - A Go 1.26 module with no external dependencies and a `CGO_ENABLED=0` build.
 - A validated environment configuration contract ready for later phases.
+- Refusal to expose an unauthenticated non-loopback listener unless the explicit unsafe override is set.
 - A shared `internal/childenv.Sanitized` helper for ACP and managed process children.
 - A private mock dispatch seam that executes before server startup, with mock behavior explicitly deferred to Phase 02.
 - An extensible `internal/httpapi.Server` with public root and authenticated health endpoints using `net/http` method/path patterns.
-- RFC 9457 responses for handler and router errors, including custom 404/405 and bounded-body failures.
+- RFC 9457 responses for requests reaching bridge handlers and middleware, including custom 404/405 and bounded-body failures; transport parser/header errors remain owned by `net/http`.
 - Secret-safe structured request logging.
-- PID-file and cleanup-registry support with SIGINT/SIGTERM shutdown bounded to ten seconds.
+- PID-file and staged pre-drain/post-drain registry support with SIGINT/SIGTERM shutdown sharing one ten-second budget.
 - Minimal repository commands and documentation.
 
 ## Completion Criteria
 
-- [ ] Every task has retained RED output demonstrating the intended test failed for the intended missing behavior before implementation.
+- [ ] Every task has retained RED output demonstrating a behavioral assertion failed against a minimal compilable seam; missing-file/missing-symbol output is not the sole RED evidence.
 - [ ] Every task has retained GREEN output demonstrating its focused verification passed after implementation.
 - [ ] `go mod edit -json` shows Go 1.26 and no dependencies.
 - [ ] `go test -race ./...` passes.
@@ -425,8 +436,9 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error
 - [ ] `internal/childenv` tests prove all bridge-only variables are removed while unrelated credentials and ordering are preserved.
 - [ ] All HTTP construction goes through `httpapi.NewServer(...).Handler()`; no standalone router constructor exists.
 - [ ] With no token, `GET /v1/health` returns 200; with a token, it returns 401 without a valid bearer token and 200 with one; `GET /` remains public.
+- [ ] Empty-token startup succeeds only for loopback hosts unless `AGENT_BRIDGE_ALLOW_INSECURE_REMOTE=1`; non-loopback authenticated startup succeeds, and the unsafe override is removed from child environments.
 - [ ] Unknown routes and wrong methods return `application/problem+json`, with wrong methods carrying the correct `Allow` header.
-- [ ] SIGINT and SIGTERM each stop acceptance, execute cleanup once, remove the PID file, and exit 0 within ten seconds.
+- [ ] SIGINT and SIGTERM each stop acceptance; complete pre-drain signal-and-wait process/pump termination before waiting on handlers; use post-drain only for idempotent completion confirmation, non-process commits, and DB cleanup; remove the PID file last; and exit 0 within one shared ten-second deadline.
 - [ ] No ACP endpoint, SQLite code, subprocess runtime, or non-foundation domain API was introduced.
 
 ## Final Verification Commands
