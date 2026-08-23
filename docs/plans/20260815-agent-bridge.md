@@ -1,415 +1,169 @@
-# Plan: agent-bridge (Go port of sandbox-agent server core)
+# Specification: agent-bridge
 
 **Date:** 2026-08-15
+**Revised:** 2026-08-23
 **Status:** DRAFT
-**Risk Level:** Medium
+**Risk Level:** High
 
 ---
 
 ## Overview
 
-Re-implement the sandbox-agent Rust server core in Go: an HTTP server that runs inside a sandbox and bridges ACP (Agent Client Protocol) JSON-RPC between a remote client (HTTP/SSE) and coding-agent subprocesses (stdio). Plus run-command, filesystem, and config APIs. Agents are **pre-provisioned in Docker images**, never installed at runtime.
+Reimplement the Rust `sandbox-agent` server core as one static Linux Go binary. It bridges raw ACP JSON-RPC between remote HTTP/SSE clients and pre-provisioned coding-agent subprocesses over stdio, and exposes process, filesystem, and per-project config APIs. Agents are pinned in the runtime image and are never installed by the server.
 
 ## Goal
 
-A single static Go binary (`agent-bridge`) that:
-1. Tunnels raw ACP JSON-RPC envelopes between `POST/GET/DELETE /v1/acp/{serverId}` and agent subprocesses (Claude Code, Codex, OpenCode via their ACP adapters) — pure passthrough, same contract as the Rust server.
-2. Provides `/v1/processes/*` (run/start/stop commands), `/v1/fs/*` (files, upload-batch seeding), `/v1/config/{mcp,skills}` (per-project config).
-3. Resolves agent binaries from PATH + env overrides. **No download/install code exists in the server.**
-4. Ships pinned-agent Docker images (agent + ACP adapter versions pinned at build time).
+Deliver `agent-bridge` with client-compatible ACP behavior for Claude Code, Codex, and OpenCode; durable per-sandbox ACP event/session state; and the required process, filesystem, and config APIs. Preserve raw ACP passthrough: the bridge tracks routing/session metadata but does not interpret or normalize conversation content.
 
-## Requirements (constraints + acceptance criteria)
+## Requirements
 
-- **Dependencies: Go stdlib everywhere + ONE narrow exception.** ACP is a raw JSON-RPC passthrough (no SDK needed — mirrors the Rust server which uses zero ACP crates), SSE is ~30 lines with `net/http`. **The sole external module is the pure-Go SQLite driver `modernc.org/sqlite`** (CGO-free → keeps the single static binary; used via `database/sql`) — required for the persistent event/session store (`#DB-EVENTS`/`#STATE`). No other external modules. If PTY/terminal WS is needed later, add `creack/pty` + `coder/websocket` then — extension point documented, not built now.
-- **Go 1.26** (toolchain floor = what's installed locally). `net/http` ServeMux with method+path patterns (Go 1.22+).
-- **No runtime agent installation.** Any attempt to auto-download/npm-install an agent is out of scope and must not exist in code.
-- **Auth:** optional global bearer token via `AGENT_BRIDGE_TOKEN`. When set, ALL `/v1/*` routes (including health) require `Authorization: Bearer <token>`, else 401 problem+json. When unset, no auth.
-- **Error format:** `application/problem+json` (RFC 7807): `{type, title, status, detail, extensions?}` for all non-2xx errors.
-- **ACP contract parity with sandbox-agent** (client-side compatibility is the point):
-  - `POST /v1/acp/{serverId}`: `Content-Type: application/json` required (415 otherwise); `Accept: application/json` required (406 otherwise). Query param `agent` required on FIRST POST (400 if missing, 409 if conflicting with existing server's agent). Body is a raw JSON-RPC envelope: request (method+id) → 200 with the response envelope; notification (no id) → 202 empty. 404 unknown serverId. 504 on response timeout.
-  - `GET /v1/acp/{serverId}`: `Accept: text/event-stream` required (406 otherwise). SSE: `event: message`, `id: <monotonic seq>`, `data: <JSON-RPC envelope>`. Replays persisted envelopes after `Last-Event-ID` (if present) **from the SQLite store**, then live stream. Keepalive `: heartbeat` every 15s.
-  - `DELETE /v1/acp/{serverId}`: 204, kills the agent subprocess **and prunes that server's event + session rows from the DB**.
-  - `GET /v1/acp/{serverId}/events` (`#DB-EVENTS`): `?serverId=&sessionId=&after=<seq>&limit=&order=` → `{events:[{seq, kind: request|response|notification|synthetic, method, payload, sessionId?, createdAtMs}]}`. Query persisted event history keyed by `serverId` or ACP `sessionId`.
-  - `GET /v1/acp/{serverId}/status` (`#STATE`): → `{serverId, agent, status: creating|idle|busy|exited, createdAtMs, lastEventSeq, sessionIds:[...], pid, updatedAtMs}`. Status is persisted so a reconnected client can check and resume an idle/exited session.
-  - **Session resume** (`#STATE`): the bridge is a pure passthrough and does NOT implement resume. `session/load` / `session/resume` are forwarded verbatim to the agent, which rehydrates from its own on-disk state (claude `~/.claude/projects/{cwd-slug}/{sessionId}.jsonl`, codex `~/.codex/sessions`, opencode session store). The bridge's only obligations: keep the subprocess + cwd alive long enough, persist the known `sessionId`s, and recreate the subprocess on a POST to an `exited` serverId. All three agents advertise `loadSession:true` and `sessionCapabilities.resume` (verified 2026-08-23).
-  - Synthetic notifications (adapter-level, mirror Rust): `_adapter/agent_exited` on subprocess exit, `_adapter/invalid_stdout` on unparseable stdout line. These are the client's turn-end/diagnostic signals.
-  - Per-agent Pi-style payload normalization is OUT of scope (Pi not supported).
-- **Agents supported:** `claude`, `codex`, `opencode`. Resolution (PATH lookup via `exec.LookPath`, env override wins):
-  - claude → bin `claude-agent-acp` (override `AGENT_BRIDGE_CLAUDE_BIN`, `AGENT_BRIDGE_CLAUDE_ARGS`)
-  - codex → bin `codex-acp` (override `AGENT_BRIDGE_CODEX_BIN`, `AGENT_BRIDGE_CODEX_ARGS`)
-  - opencode → bin `opencode` args `["acp"]` (override `AGENT_BRIDGE_OPENCODE_BIN`, `AGENT_BRIDGE_OPENCODE_ARGS`)
-  - `mock` → built-in Go mock agent (test support only, mirrors Rust's mock; enabled when `agent=mock`). Hidden from docs.
-- **One subprocess per serverId** (`#STATE`). A subprocess persists across client disconnects until it is `DELETE`d or its idle-TTL elapses (see `AGENT_BRIDGE_IDLE_TTL_MS` reaper), which is what lets a reconnected client re-prompt an "idle" session. Sessions inside an agent are multiplexed by the adapter itself (ACP `session/new`); the server inspects **only** the ACP `sessionId` returned by `session/new` (and echoed by `session/load`/`session/resume`) to index sessions in the DB — it never inspects prompt/conversation content.
-- **Request timeout:** default 120s, env `AGENT_BRIDGE_ACP_REQUEST_TIMEOUT_MS` (mirrors `SANDBOX_AGENT_ACP_REQUEST_TIMEOUT_MS`).
-- **Persistent event store** (`#DB-EVENTS`): every envelope read from an agent's stdout (responses + notifications + synthetic `_adapter/*`) is appended to an SQLite DB (WAL mode), keyed by `(server_id, seq)` and **also indexed by ACP `sessionId`** (query by either key). Enables `GET /v1/acp/{serverId}/events` history queries and durable `Last-Event-ID` replay (SSE replays from the DB, then goes live; live events are deduped by `seq`). **No in-memory cap.** Retention = prune a server's rows only on `DELETE /v1/acp/{serverId}` (unbounded otherwise, per client decision). `seq` is the existing monotonic per-server sequence.
-- **Server env:** `AGENT_BRIDGE_HOST` (default 127.0.0.1), `AGENT_BRIDGE_PORT` (default 2468), `AGENT_BRIDGE_LOG_LEVEL` (default info, `log/slog`), `AGENT_BRIDGE_DB` (default `./agent-bridge.db`, WAL), `AGENT_BRIDGE_IDLE_TTL_MS` (default 900000 — idle subprocess reaped after this; `0` disables).
-- **Graceful shutdown:** SIGINT/SIGTERM → kill all agent subprocesses, drain and close.
-- **Out of scope (explicit):** PTY/terminal WS, desktop API, agent install/list endpoints, OpenCode-compat `/opencode` surface, Inspector UI, telemetry, daemon mode, CLI subcommands.
+### Platform and dependencies
 
-### Sandbox state model (divergence from sandbox-agent: `#DB-EVENTS` + `#STATE`)
+- Linux only; Go 1.26; `net/http` method/path ServeMux patterns.
+- Go stdlib plus one external module: pure-Go `modernc.org/sqlite` through `database/sql`. No other production or test modules.
+- Build with `CGO_ENABLED=0` as one static binary. SQLite DB/WAL files are runtime state, not embedded assets.
+- No runtime agent download/install/update code.
+- PTY, terminal WebSocket, desktop APIs, agent install/list APIs, `/opencode` compatibility, Inspector UI, telemetry, daemon mode, and public CLI subcommands are out of scope.
 
-The Rust server holds **only in-memory** state (1024-envelope ring buffer in `acp-http-adapter/src/process.rs`; per-server instance map in `acp_proxy_runtime.rs`). This port **deliberately diverges internally** so each sandbox is authoritative for its own state, allowing a **stateless control plane to scale to thousands of sandboxes** without holding a connection per sandbox. The wire contract is unchanged.
+### Authentication and errors
 
-- **Event history (`#DB-EVENTS`):** every envelope read from an agent's stdout (responses + notifications + synthetic `_adapter/*`) is appended to SQLite (`modernc.org/sqlite`, WAL) at `AGENT_BRIDGE_DB`, keyed by `(server_id, seq)` primary key and indexed by ACP `sessionId`. SSE replay and `/events` queries read the DB. No cap; pruned per-server on `DELETE`.
-- **Session roster + status (`#STATE`):** `sessions(server_id PK, agent, status, created_at_ms, last_event_seq, pid, exited_at_ms)`; `status` ∈ `creating|idle|busy|exited` (`busy` = ≥1 in-flight ACP request on that server). Served by `GET /v1/acp/{serverId}/status` and `GET /v1/acp`. ACP `sessionId`s are extracted from `session/new` (and echoed by `session/load`/`session/resume`) and tracked per server.
-- **Idle reaper:** a subprocess idle for longer than `AGENT_BRIDGE_IDLE_TTL_MS` is killed and marked `exited` (history + `sessionId`s persist in the DB). A POST to an `exited` serverId transparently recreates the subprocess with the same agent + cwd, so the client can drive `session/load`/`session/resume` to rehydrate from the agent's own disk.
-- **Auth:** unchanged — the single `AGENT_BRIDGE_TOKEN` authorizes all sandboxes' state/status/events endpoints. Per-sandbox token injection (so a leak doesn't cross sandboxes) is the orchestrator's responsibility and is noted here, not enforced by the bridge.
+- `AGENT_BRIDGE_TOKEN` unset: no auth. Set: every `/v1/*` route, including health, requires `Authorization: Bearer <token>` using constant-time comparison. `GET /` remains public.
+- Every non-2xx HTTP response, including router 404/405, malformed body, and body-limit failures, is `application/problem+json` using RFC 9457 fields `{type,title,status,detail}` and top-level extension members.
+- ACP JSON-RPC error envelopes are HTTP 200 responses, not HTTP problem responses.
+- Agent stderr included in a 502 is capped at 8KiB under `agentStderr`. In lines containing case-insensitive `token|key|secret|password` followed by `:` or `=`, replace the remainder with `[REDACTED]`.
 
-### Endpoint contract (non-ACP, mirrors sandbox-agent)
+### ACP HTTP contract
+
+- Server IDs are client-defined, 1-128 bytes, using only ASCII letters, digits, `.`, `_`, and `-`.
+- `POST /v1/acp/{serverId}` requires `Content-Type: application/json`; media-type parameters are allowed. Missing `Accept`, `application/json`, `application/*`, or `*/*` is accepted; otherwise 406.
+- Body is one JSON-RPC 2.0 object, maximum 10MiB. Batch arrays and `id:null` are invalid. IDs may be strings or JSON numbers; the exact serialized value is the correlation key.
+- Client request (`method` plus non-null `id`) waits for the matching response and returns 200. Duplicate in-flight IDs on one server return 409. Default timeout is 120s via `AGENT_BRIDGE_ACP_REQUEST_TIMEOUT_MS`; timeout returns 504. Late responses remain persisted and visible over SSE.
+- Client notification (`method`, no `id`) and client response (`id` plus exactly one of `result`/`error`, no `method`) are forwarded and return 202 empty. Client responses complete agent reverse-calls.
+- First POST creates the server and requires `?agent=claude|codex|opencode|mock`; omission is 400. A conflicting agent later is 409. `mock` is test-only and omitted from public docs.
+- Unknown server is 404 for GET, DELETE, status, and events. First POST with an agent creates it.
+- `GET /v1/acp/{serverId}` accepts missing Accept or one allowing `text/event-stream`; otherwise 406. It emits `event: message`, monotonic per-server `id`, raw JSON `data`, and `: heartbeat` every 15s.
+- `Last-Event-ID` is an unsigned decimal integer; 0 is valid. Replay emits larger sequences, then live events without gaps or duplicates.
+- `DELETE /v1/acp/{serverId}` atomically marks deleting, closes SSE, kills the process group, removes the live instance, prunes DB rows, and returns 204. Concurrent POSTs return 409; late output cannot restore rows.
+- Synthetic notifications are `_adapter/agent_exited` and `_adapter/invalid_stdout`.
+
+### ACP lifecycle and persistence
+
+- One subprocess exists per live server ID and multiplexes ACP sessions itself. It survives HTTP/SSE disconnects until DELETE, exit, bridge shutdown, or idle reap.
+- Status is `creating|idle|busy|exited`; busy means at least one in-flight client request. Idle TTL starts on transition to idle, defaults to 900000ms via `AGENT_BRIDGE_IDLE_TTL_MS`; 0 disables it.
+- After exit/reap, events and sessions remain. An exited server is recreated only by `initialize`; any other request returns 409 instructing reinitialization. The client then sends `session/load` or `session/resume`; the bridge never synthesizes or replays ACP requests.
+- Subprocesses inherit bridge cwd. ACP session cwd comes from `session/new`, `session/load`, or `session/resume` params and is persisted.
+- At bridge startup, persisted `creating|idle|busy` rows become `exited` and stale PIDs are cleared. Persisted PIDs are never signaled.
+- Only agent stdout envelopes are persisted. `kind=request` means agent reverse-call; inbound client prompts are not stored.
+- Pending metadata stores only id, method, and optional sessionId. The bridge inspects JSON-RPC routing fields and `cwd`/`sessionId` on session lifecycle/scoped messages only.
+- Agent output commits before synchronous delivery or SSE broadcast. SQLite failure kills and marks the server exited, logs the failure, and fails pending requests with 507.
+- SSE subscribes before reading a DB watermark, replays through it, then emits buffered/live events above it. Lagged subscribers catch up from SQLite.
+- Event retention is intentionally unbounded and prune-on-DELETE only. Operators provision and monitor disk.
+
+### ACP state endpoints and schema
+
+- `GET /v1/acp` → `{"servers":[{"serverId","agent","status","createdAtMs","updatedAtMs"}]}`, sorted by serverId and including exited servers.
+- `GET /v1/acp/{serverId}/status` → `{serverId,agent,status,createdAtMs,lastEventSeq,sessionIds,pid?,updatedAtMs}`; session IDs sorted, PID omitted unless live.
+- `GET /v1/acp/{serverId}/events?sessionId=&after=&limit=&order=` → `{events:[{seq,kind,method?,payload,sessionId?,createdAtMs}]}`. Path selects server; sessionId optionally filters. `after` exclusive/default 0; limit default 100/max 1000; order `asc` default or `desc`; unknown session filter is 404.
+- Tables:
+  - `servers(server_id PK, agent, status, created_at_ms, updated_at_ms, idle_since_ms, last_event_seq, pid, exited_at_ms)`
+  - `server_sessions(server_id, session_id, cwd, created_at_ms, updated_at_ms, PRIMARY KEY(server_id,session_id))`
+  - `events(server_id, seq, kind, method, payload, session_id, created_at_ms, PRIMARY KEY(server_id,seq))`
+- Foreign keys cascade; events index `(server_id,session_id,seq)`. One bridge owns one DB; use one SQL connection, WAL, foreign keys, 5s busy timeout, transactional sequence allocation, and checkpoint on shutdown.
+
+### Agent resolution
+
+| Agent | Default binary | Default args | Overrides |
+|---|---|---|---|
+| claude | `claude-agent-acp` | `[]` | `AGENT_BRIDGE_CLAUDE_BIN`, `AGENT_BRIDGE_CLAUDE_ARGS` |
+| codex | `codex-acp` | `[]` | `AGENT_BRIDGE_CODEX_BIN`, `AGENT_BRIDGE_CODEX_ARGS` |
+| opencode | `opencode` | `["acp"]` | `AGENT_BRIDGE_OPENCODE_BIN`, `AGENT_BRIDGE_OPENCODE_ARGS` |
+
+- Binary override wins, then `exec.LookPath`; errors name agent and binary.
+- `*_ARGS` are JSON arrays of strings; invalid values fail startup.
+- Children inherit bridge env except `AGENT_BRIDGE_TOKEN`, `AGENT_BRIDGE_PID_FILE`, and `AGENT_BRIDGE_INTERNAL_MOCK_AGENT`; agent credentials remain available.
+- `mock` launches the current binary with private `AGENT_BRIDGE_INTERNAL_MOCK_AGENT=1`, entering its JSONL loop before HTTP. No public mock subcommand.
+
+### Non-ACP endpoints
 
 | Endpoint | Behavior |
 |---|---|
 | `GET /v1/health` | 200 `{"status":"ok"}` |
 | `GET /` | 200 `{"name":"agent-bridge","docs":"..."}` |
-| `POST /v1/processes` | `{command, args[], cwd?, env{}}` → 200 snapshot `{id, command, args, cwd, status:"running", pid, createdAtMs}` |
-| `GET /v1/processes` | 200 `{processes:[snapshot]}` sorted by id |
+| `POST /v1/processes` | `{command,args[],cwd?,env{}}` → 200 running snapshot |
+| `GET /v1/processes` | 200 `{"processes":[snapshot]}` sorted by ID |
 | `GET /v1/processes/{id}` | 200 snapshot / 404 |
-| `POST /v1/processes/{id}/stop` | SIGTERM, wait ≤2s → snapshot |
-| `POST /v1/processes/{id}/kill` | SIGKILL, wait ≤1s → snapshot |
-| `DELETE /v1/processes/{id}` | 204; 409 if still running |
-| `GET /v1/processes/{id}/logs?stream=stdout\|stderr\|combined&tail=N&since=seq` | 200 `{entries:[{sequence, stream, timestampMs, data(base64), encoding:"base64"}]}` |
-| `POST /v1/processes/{id}/input` | `{data, encoding: base64\|utf8}` → 200 `{bytesWritten}`; 409 if exited |
-| `POST /v1/processes/run` | `{command, args, cwd?, env{}, timeoutMs?, maxOutputBytes?}` → 200 `{exitCode, timedOut, stdout, stderr, stdoutTruncated, stderrTruncated, durationMs}` |
-| `GET/POST /v1/processes/config` | runtime limits: maxConcurrentProcesses=64, defaultRunTimeoutMs=30000, maxRunTimeoutMs=300000, maxOutputBytes=1MiB, maxLogBytesPerProcess=10MiB, maxInputBytesPerRequest=64KiB |
-| `GET /v1/fs/entries?directory=&type=all\|file\|dir` | 200 `{entries:[{name, path, type, size, modifiedMs}]}` sorted |
-| `GET /v1/fs/file?path=` | 200 raw bytes (Content-Type octet-stream) / 404 |
-| `PUT /v1/fs/file?path=` | raw body → 200 `{path, size}` |
-| `DELETE /v1/fs/entry?path=` | 204 (recursive for dirs) / 404 |
-| `POST /v1/fs/mkdir` | `{directory, name}` → 200 `{path}` |
-| `POST /v1/fs/move` | `{source, destination}` → 200 `{path}` |
-| `GET /v1/fs/stat?path=` | 200 `{path, type, size, modifiedMs, mode}` / 404 |
-| `POST /v1/fs/upload-batch?directory=` | body = tar.gz, extract into directory → 200 `{files:[{path, size}]}` (safe extraction: no absolute paths, no `..` escapes) |
-| `GET/PUT/DELETE /v1/config/mcp?directory=` | JSON map `{name: {command, args, env}}` stored at `{directory}/.agent-bridge/config/mcp.json` |
-| `GET/PUT/DELETE /v1/config/skills?directory=` | JSON map stored at `{directory}/.agent-bridge/config/skills.json` |
-
-Processes run with piped stdio (no TTY). Logs are base64 lines with monotonic sequence, capped by `maxLogBytesPerProcess`.
-
-### Pinned versions (Phase 5 image defaults, build ARGs — bump by changing ARG, no code change)
-
-| Artifact | Source | Pin (verified 2026-08-15) |
-|---|---|---|
-| claude ACP adapter | npm `@agentclientprotocol/claude-agent-acp` | 0.68.0 |
-| codex ACP adapter | npm `@agentclientprotocol/codex-acp` | 1.3.0 |
-| opencode | npm `opencode-ai` | 1.18.18 |
-| node (runtime for npm adapters) | node:24-slim (Debian glibc) | — |
-
-### Verified facts (2026-08-15, checked against npm registry, GitHub sources, ACP spec, agentclientprotocol registry)
-
-**Adapter/agent bundling (build image implications):**
-- `claude-agent-acp` bundles the native Claude CLI via its dependency `@anthropic-ai/claude-agent-sdk` platform optionalDependencies (~320MB). **No `claude` binary install needed.** `engines.node: >=22` (node 24 OK). Override: `CLAUDE_CODE_EXECUTABLE`.
-- `codex-acp` bundles the native codex binary via `@openai/codex` optionalDependencies (~315MB, musl-static, runs on glibc+Alpine). **No `codex` binary install needed.** No engines field. Override: `CODEX_PATH`.
-- `opencode-ai` ships a stub bin replaced at **postinstall** by the native platform binary via optionalDependencies (linux-x64/arm64, glibc or musl; ~184MB). `opencode acp` is a native stdio JSON-RPC subcommand; no HTTP server needed. No engines field.
-- **Install rules: never use `--omit=optional` or `--ignore-scripts`** — either breaks the native binaries. None of the packages have install/postinstall build-tool needs (beyond opencode's stub replacement, which needs node+npm on PATH — present in node:24-slim).
-- No extra apt packages required by any adapter. Expected image size ~1GB+ (node base + ~640MB adapter binaries + ~184MB opencode) — acceptable for a sandbox provisioning image, noted here so it's not mistaken for bloat later.
-- Runtime hardening envs (headless sandbox): `DISABLE_AUTOUPDATER=1` (claude), `NO_BROWSER=1` (codex).
-
-**Keyless behavior (drives e2e strictness):**
-
-| Agent | `initialize` without keys | `session/new` without keys |
-|---|---|---|
-| claude (via claude-agent-acp) | Always succeeds (pure handshake, offline) | Fails (auth required) |
-| codex (via codex-acp) | Always succeeds | Fails with `-32000` auth-required envelope (unless `DEFAULT_AUTH_REQUEST` set) |
-| opencode (`opencode acp`) | Always succeeds (static response, zero credential checks) | Succeeds; auth surfaces at prompt time |
-
-- Codex api-key envs: `CODEX_API_KEY` (precedence) or `OPENAI_API_KEY`. Claude: `ANTHROPIC_API_KEY` (or terminal/gateway auth). OpenCode: provider keys or `opencode auth login`.
-
-**ACP handshake essentials (stable v1, for tests + mock agent correctness):**
-- `initialize` request MUST carry `protocolVersion` as an **integer** (`1`); agent MUST echo a supported version. `clientCapabilities` all optional; omitted = unsupported.
-- `initialize` response schema-required fields: `protocolVersion`, `agentCapabilities`, `authMethods` (`[]` = no auth surface; client MUST NOT call `authenticate` then). **There is no `instructions` field** (MCP concept).
-- `session/new` minimal params: `{cwd: "<absolute path>", mcpServers: []}`.
-- **Session identity + resume:** `session/new` returns a stable `sessionId`; `session/load` (replays history, gated by `loadSession`) and `session/resume` (no replay, gated by `sessionCapabilities.resume`) reattach to a prior `sessionId`, with the agent persisting sessions to its own disk. claude/codex/opencode all advertise both (`loadSession:true` + `sessionCapabilities.resume`, verified 2026-08-23). **opencode 1.18.18 `session/load` response omits `sessionId`** (opencode #42442, open) — clients + the bridge persist the `sessionId` from `session/new` and use that.
-- `session/prompt` minimal: single `{"type":"text","text":...}` block; baseline all agents support Text.
-- **Turn completion = the prompt RESPONSE envelope** with `result.stopReason` ∈ {`end_turn`, `max_tokens`, `max_turn_requests`, `refusal`, `cancelled`} — NOT a notification. It arrives after all `session/update` notifications for the turn.
-- Stable v1 `sessionUpdate` subtypes: `user_message_chunk`, `agent_message_chunk`, `agent_thought_chunk`, `tool_call`, `tool_call_update`, `plan`, `available_commands_update`, `current_mode_update`, `session_info_update`, `usage_update`.
-- stdio framing: newline-delimited JSON, one message per line, no embedded newlines; stderr = logs; stdout = ACP messages only.
-- Registry confirms our launch specs: claude-acp/codex-acp need no args; opencode needs arg `acp`.
-
-### Reference implementation (Rust sandbox-agent) — source of truth for wire contract parity
-
-The client-facing **wire contract** must match the Rust server. Repo: `/home/viethoangcr/Workspace/github/rivet/sandbox-agent` (package `sandbox-agent`). The Rust server keeps all state **in memory only** (ring buffer + instance map) and has **no sqlite / no persisted session state** — this plan deliberately diverges internally (see `#DB-EVENTS`, `#STATE`) while preserving the wire contract.
-
-| Plan task | Rust file (sandbox-agent) | Notes |
-|---|---|---|
-| 1.2 Adapter runtime | `server/packages/acp-http-adapter/src/process.rs` | `AdapterRuntime` (spawn + stdio JSON-RPC loop); **in-memory ring buffer `RING_BUFFER_SIZE=1024` (line 18) — replaced by sqlite `#DB-EVENTS`**; broadcast channel 512 (line 118); pending-request matched by id (lines 400–437); SSE stream + `Last-Event-ID` replay (`subscribe()`/`sse_stream()`, lines 257–304); stderr tail `STDERR_TAIL_SIZE=16` (line 19); `_adapter/invalid_stdout` (lines 376–398); `_adapter/agent_exited` exit-watcher (lines 507–565); `id_key` (line 623) |
-| 1.3 Proxy manager | `server/packages/sandbox-agent/src/acp_proxy_runtime.rs` | `AcpProxyRuntime` (**in-memory instance map** `HashMap<String, Arc<ProxyInstance>>` line 29 — replaced by persisted state `#STATE`); get-or-create + per-server mutex (lines 220–276); 409 agent conflict (lines 225–237); missing-agent 400 (line 262); `delete` kill+remove (lines 186–192); `shutdown_all` (line 194); `list_instances` (line 86); agent resolution (line 300); error mapping + `agentStderr` (lines 478–603) |
-| 1.4 ACP handlers + SSE | `server/packages/sandbox-agent/src/router.rs` | `get_v1_acp_servers` (line 3115); `post_v1_acp` (line 3153, content-type/accept 3160–3171, 200/202); `get_v1_acp` SSE (line 3213, keep-alive 15s 3228–3232); `delete_v1_acp` (line 3246) |
-| 1.4 / 3.1 validation | `server/packages/sandbox-agent/src/router/support.rs` | `parse_last_event_id` (line 582), `content_type_is` (line 529), `accept_allows` (line 539), `problem_from_sandbox_error` (line 601); FS path safety `resolve_fs_path`/`sanitize_relative_path` (lines 483/500) |
-| 2.1 Process runtime | `server/packages/sandbox-agent/src/process_runtime.rs` | `ProcessConfig` maxConcurrentProcesses=64 (lines 110/121), `ManagedProcess` map (line 140); limits/validation |
-
----
-
-## Phase 0: Scaffolding
-
-### Task 0.1: Repo init
-
-**Description:** Create project skeleton: `go.mod` (module `github.com/viethoangcr/agent-bridge`, `go 1.26`), `.gitignore`, `README.md` (scope + build), `Makefile` (build/test/vet), `AGENTS.md` (project conventions: stdlib-only rule, no runtime install rule, contract parity rule).
-**Files:** `go.mod`, `.gitignore`, `README.md`, `Makefile`, `AGENTS.md`
-**Test:** none (infra).
-**Verify:** `go build ./...` succeeds; `make vet` passes.
-
-- [ ] `go mod init github.com/viethoangcr/agent-bridge`
-- [ ] Write Makefile: `build`, `test`, `vet` (go vet + gofmt check), `image` (Phase 5)
-- [ ] Write AGENTS.md with the three project rules above
-
-**Risk:** Low. **Reversibility:** Easy.
-
-### Task 0.2: Server bootstrap + auth + problem+json
-
-**Description:** `cmd/agent-bridge/main.go`: parse env config, build router, SIGINT/SIGTERM graceful shutdown (shutdown hook registry called on signal). `internal/server/server.go`: router assembly, auth middleware (constant-time compare), `internal/server/problem.go`: `ProblemDetails` type + `writeProblem(w, status, type, title, detail)`. `GET /v1/health`, `GET /`.
-**Files:** `cmd/agent-bridge/main.go`, `internal/server/server.go`, `internal/server/problem.go`, `internal/server/server_test.go`
-**Test:** write first: health returns 200 ok; token set → no header = 401 problem+json, wrong token = 401, right token = 200; problem+json body shape matches contract.
-**Verify:** `go test ./internal/server/ -v`
-
-- [ ] Implement `internal/server/problem.go` (RFC 7807 struct, helper)
-- [ ] Implement auth middleware + config struct (Host, Port, Token, LogLevel, AcpTimeout)
-- [ ] Implement health + root handlers
-- [ ] Implement graceful shutdown (signal → hook list, 10s force-exit)
-
-**Risk:** Low. **Reversibility:** Easy.
-
----
-
-## Phase 1: ACP bridge core
-
-### Task 1.1: Mock ACP agent (test support)
-
-**Description:** `internal/mockagent/mockagent.go`: reads newline-delimited JSON-RPC from stdin, replies on stdout. Behavior: `initialize` → `{"protocolVersion":1, "agentCapabilities":{"loadSession":true,"promptCapabilities":{"image":false,"audio":false,"embeddedContext":false},"mcpCapabilities":{"http":false,"sse":false},"sessionCapabilities":{"resume":{},"list":{},"close":{}},"auth":{}}, "authMethods":[], "agentInfo":{"name":"mock-agent","version":"0.1.0"}}` (schema-required fields present, no `instructions` key; `loadSession` + `sessionCapabilities.resume/list/close` advertised so the keyless resume e2e path is testable — mirrors real agents and fixes the prior `loadSession:false`); `session/new` → `{sessionId:"mock-N"}` (deterministic counter, stored in an in-memory session store keyed by sessionId so `session/load`/`session/resume` can reattach within one subprocess — disk persistence is not needed since resume-across-subprocess is exercised via the real agents); `session/load` → reattach + replay stored `session/update` history then respond; `session/resume` → reattach, no replay, respond; `session/list` → stored sessions; `session/close` → drop session; `session/prompt` → emits 2 `session/update` notifications (`agent_message_chunk`) then response `{stopReason:"end_turn"}` (turn completion is the response, mirroring real agents); `session/request_permission` reverse-call emitted when prompt params contain `"triggerPermission":true`, waits for client response on stdin, then completes prompt. Unknown request → error `-32601`. Exposed as agent id `mock` in the bridge (test-only path, same trick as Rust server).
-**Files:** `internal/mockagent/mockagent.go`, `internal/mockagent/mockagent_test.go`
-**Test:** write first: feed JSONL, assert response id-matching, notification ordering, permission round-trip.
-**Verify:** `go test ./internal/mockagent/ -v`
-
-- [ ] JSON-RPC loop: parse line, request vs notification dispatch
-- [ ] initialize / session/new / session/prompt handlers
-- [ ] permission reverse-call with pending response table
-
-**Risk:** Low. **Reversibility:** Easy.
-
-### Task 1.2: Adapter runtime (stdio JSON-RPC bridge)
-
-**Description:** `internal/acp/runtime.go`: spawn agent subprocess with piped stdin/stdout/stderr. Loop reads stdout lines → parse JSON → if response (`id` set, no `method`) match pending request by id (stringified id as key) and deliver; append ALL envelopes (responses included, in order) to the SQLite event store (`#DB-EVENTS`) + channel fan-out. stderr tail (last 16 lines). Exit watcher → append `_adapter/agent_exited`. Unparseable line → `_adapter/invalid_stdout`. `Post(ctx, envelope)`: request → write line, await matching response or timeout; notification → write, return accepted. `Stream(lastSeq)` → replay from DB + live channel (dedupe live by `seq`). `Shutdown()` → kill child, wait.
-**Files:** `internal/acp/runtime.go`, `internal/acp/store.go` (sqlite), `internal/acp/runtime_test.go`
-**Test:** write first using mock agent subprocess: request/response match; notification broadcast order (notification before response); replay from lastSeq (from DB); timeout (5ms timeout, mock sleeps); agent_exited emitted on exit; stderr tail captured; shutdown kills child; event store survives re-read (append + query by serverId and sessionId).
-**Verify:** `go test ./internal/acp/ -v`
-
-- [ ] Spawn + pipe setup, env passthrough
-- [ ] stdout loop: parse, id-match, append-to-store + broadcast
-- [ ] stderr tail + exit watcher
-- [ ] `store.go`: `Append`, `Query(serverId|sessionId, after, limit, order)`, `PruneByServer`, WAL + schema migrate
-- [ ] Post (request/notification paths), Stream, Shutdown
-
-**Risk:** Medium (core concurrency). **Reversibility:** Needs backup (foundational).
-
-### Task 1.3: Proxy manager (instances + agent resolution)
-
-**Description:** `internal/acp/proxy.go`: `Proxy` holds `map[serverId]*Instance` (RWMutex) + per-server create locks. `Post(serverId, bootstrapAgent, envelope)`: get-or-create instance (requires agent on first POST; 409 on mismatch); if the server is `exited`, recreate the subprocess with the same agent + cwd (resume path); resolve launch spec (env override → LookPath → error if missing: "agent process not found for {agent}: binary '{bin}' not on PATH"); spawn runtime; forward. Extract the ACP `sessionId` from `session/new` responses (and `session/load`/`session/resume` echoes) and index it per server (`#STATE`). `Stream`, `Status` (read from `sessions` table), `Delete` (kill + remove + prune events/sessions), `ShutdownAll`, idle-reaper sweep. Env var parsing for overrides.
-**Files:** `internal/acp/proxy.go`, `internal/acp/resolve.go`, `internal/acp/session.go` (roster/status DB access), `internal/acp/proxy_test.go`
-**Test:** write first with mock agent (env override pointing at mock binary): create-on-first-post, reuse, 409 conflict, missing-binary error message contains agent name, delete kills + prunes, **recreate-on-prompt for an `exited` serverId**, sessionId captured from `session/new`, status transitions (`creating→idle→busy→idle`), list not needed (no agents endpoint).
-**Verify:** `go test ./internal/acp/ -v`
-
-- [ ] `resolve.go`: LaunchSpec per agent id (defaults + env overrides + LookPath)
-- [ ] `proxy.go`: instance map, per-server mutex, get-or-create, recreate-on-exited, delete+prune, shutdown-all
-- [ ] `session.go`: session roster + status persistence, sessionId extraction, idle-reaper sweep
-
-**Risk:** Medium. **Reversibility:** Needs backup.
-
-### Task 1.4: HTTP handlers (POST/GET/DELETE /v1/acp/{serverId})
-
-**Description:** `internal/server/acp_handlers.go`: content-type/accept validation (415/406), body read (cap 10MiB), parse JSON (400 on bad), forward via Proxy, map outcomes: response → 200 JSON; accepted → 202; timeout → 504 problem+json; exited → 502 problem+json with stderr tail in detail. GET → SSE writer (`text/event-stream`, flush after each event, `event: message` + `id:` + `data:`, heartbeat every 15s, close on client disconnect / server shutdown; replays from the DB store). `GET /v1/acp/{serverId}/events` → query the event store (by `serverId` or `sessionId`, paginated). `GET /v1/acp/{serverId}/status` → read the `sessions` table status. DELETE → 204 + prune. Wire into router at `/v1/acp/{serverId}` (+ `/events`, `/status`) and `/v1/acp` list (server ids + status, mirror Rust `GET /v1/acp`).
-**Files:** `internal/server/acp_handlers.go`, `internal/server/acp_handlers_test.go`
-**Test:** write first with mock agent + `httptest.Server`: full initialize→session/new→prompt flow over HTTP; notification via SSE received in order with correct ids; replay with `Last-Event-ID: N` returns only newer (from DB); 415/406/400/404/409/504 cases; SSE keeps connection open ≥ heartbeat interval; `/status` reflects transitions; `/events?sessionId=` returns the session's history; recreate-on-prompt after `DELETE`-less exit.
-**Verify:** `go test ./internal/server/ -v -run Acp`
-
-- [ ] POST handler + validation
-- [ ] SSE handler (replay from DB + live + heartbeat + cancellation)
-- [ ] `/events` + `/status` handlers
-- [ ] DELETE handler + `GET /v1/acp` list
-
-**Risk:** Medium. **Reversibility:** Needs backup.
-
----
-
-## Phase 2: Processes API
-
-### Task 2.1: Process runtime core
-
-**Description:** `internal/process/runtime.go`: managed processes (`proc_N` ids, atomic counter): start (piped stdio), status tracking (running/exited, exit code, pid, timestamps), stop (SIGTERM on pid via `os.FindProcess`+`Signal`, wait ≤2s), kill (SIGKILL ≤1s), delete (only exited), log ring (sequence, stream, base64 data, byte cap 10MiB, broadcast channel), input (stdin pipe, byte cap), config limits with validation. Output pump goroutines per stream (8KiB reads). One-shot `Run` (timeout via context, output caps, truncation flags, kill on timeout).
-**Files:** `internal/process/runtime.go`, `internal/process/runtime_test.go`
-**Test:** write first: `sh -c "echo hi; sleep 5"` → stop exits; `sh -c "cat"` input round-trip; logs sequence order stdout/stderr; log byte cap evicts oldest; kill works; delete blocked while running; one-shot run: exit code, timeout flag, output truncation, stdout/stderr split.
-**Verify:** `go test ./internal/process/ -v`
-
-- [ ] ManagedProcess: start/status/stop/kill/delete
-- [ ] log ring + broadcast + caps
-- [ ] input writer with cap
-- [ ] RunSpec one-shot with timeout + truncation
-- [ ] Config struct + validation
-
-**Risk:** Medium. **Reversibility:** Needs backup.
-
-### Task 2.2: Processes HTTP handlers
-
-**Description:** `internal/server/process_handlers.go`: all `/v1/processes*` endpoints per contract table, JSON decode validation (400 on bad), problem+json on 404/409. Config GET/POST with validation errors.
-**Files:** `internal/server/process_handlers.go`, `internal/server/process_handlers_test.go`
-**Test:** write first: full CRUD over httptest, logs with tail/since filters, run with timeout, input base64, config validation (0 values rejected).
-**Verify:** `go test ./internal/server/ -v -run Process`
-
-- [ ] Handlers for create/list/get/stop/kill/delete/logs/input/run/config
-- [ ] Decode + validate + problem mapping
-
-**Risk:** Low. **Reversibility:** Easy.
-
----
-
-## Phase 3: Filesystem API
-
-### Task 3.1: FS service + handlers
-
-**Description:** `internal/fs/service.go`: entries (sorted, type/size/modifiedMs), read (raw bytes), write (create parents), delete (recursive dirs), mkdir, move (rename, cross-device copy+delete fallback not needed — same FS only), stat. `internal/fs/upload_batch.go`: tar.gz extract with safety (reject absolute names, `..` traversal, symlink/hardlink entries → error; strip leading `./`; size cap 512MiB). Handlers wire to `/v1/fs/*`.
-**Files:** `internal/fs/service.go`, `internal/fs/upload_batch.go`, `internal/fs/service_test.go`, `internal/fs/upload_batch_test.go`, `internal/server/fs_handlers.go`, `internal/server/fs_handlers_test.go`
-**Test:** write first (t.TempDir): entries sort/type; read/write round-trip incl. nested dirs; delete dir recursive; move; stat fields; upload-batch: valid tar.gz extracts preserving structure, malicious tar (absolute path, `../`, symlink) rejected with error and no file outside target; handlers: 404 unknown path, GET returns exact bytes.
-**Verify:** `go test ./internal/fs/ ./internal/server/ -v -run 'Fs|Upload'`
-
-- [ ] `service.go` ops
-- [ ] `upload_batch.go` safe extractor
-- [ ] `fs_handlers.go` wiring
-
-**Risk:** Medium (path traversal = security boundary). **Reversibility:** Needs backup.
-
----
-
-## Phase 4: Config API (mcp/skills)
-
-### Task 4.1: Config service + handlers
-
-**Description:** `internal/config/service.go`: read/write/delete named JSON maps at `{directory}/.agent-bridge/config/{mcp,skills}.json` (create dirs; empty→404 on GET; invalid JSON→400). Handlers: `GET/PUT/DELETE /v1/config/mcp?directory=`, same for skills. No schema beyond JSON object.
-**Files:** `internal/config/service.go`, `internal/config/service_test.go`, `internal/server/config_handlers.go`, `internal/server/config_handlers_test.go`
-**Test:** write first: round-trip map, PUT creates file at expected path (assert `.agent-bridge/config/mcp.json` location), DELETE removes, GET missing → 404, invalid JSON → 400, directory traversal in `directory` param rejected.
-**Verify:** `go test ./internal/config/ ./internal/server/ -v -run Config`
-
-- [ ] `service.go` with path validation
-- [ ] handlers
-
-**Risk:** Low. **Reversibility:** Easy.
-
----
-
-## Phase 5: Pinned-agent images
-
-### Task 5.1: Runtime image
-
-**Description:** `docker/runtime/Dockerfile`: base `node:24-slim`; ARGs for all pins (table above); `npm install -g` the two adapters + opencode at exact versions; COPY built `agent-bridge` binary; ENTRYPOINT `["agent-bridge"]`. `Makefile image` target: `go build` + `docker build --build-arg ...`. Default ARG values live in ONE file (`docker/runtime/versions.env` + `--build-arg` passthrough), so bumping versions = editing one file, zero Go changes. Verified install commands (do NOT add `--omit=optional`/`--ignore-scripts` — they strip the bundled native binaries; no native `claude`/`codex` CLI installs needed; no extra apt packages):
-```dockerfile
-RUN npm install -g @agentclientprotocol/claude-agent-acp@${CLAUDE_ADAPTER_VERSION} \
-                 @agentclientprotocol/codex-acp@${CODEX_ADAPTER_VERSION} \
-                 opencode-ai@${OPENCODE_VERSION}
-ENV DISABLE_AUTOUPDATER=1 NO_BROWSER=1
+| `POST /v1/processes/{id}/stop` | SIGTERM process group, wait ≤2s, return snapshot |
+| `POST /v1/processes/{id}/kill` | SIGKILL process group, wait ≤1s, return snapshot |
+| `DELETE /v1/processes/{id}` | 204; running is 409 |
+| `GET /v1/processes/{id}/logs?stream=stdout|stderr|combined&tail=&since=` | 200 `{"entries":[{sequence,stream,timestampMs,data,encoding:"base64"}]}`; since exclusive, then tail by entry count |
+| `POST /v1/processes/{id}/input` | `{data,encoding:base64|utf8}` → `{bytesWritten}`; exited is 409 |
+| `POST /v1/processes/run` | `{command,args,cwd?,env{},timeoutMs?,maxOutputBytes?}` → `{exitCode?,timedOut,stdout,stderr,stdoutTruncated,stderrTruncated,durationMs}` |
+| `GET/POST /v1/processes/config` | defaults: concurrent 64, run 30s/max 300s, output 1MiB, logs 10MiB, input 64KiB |
+| `GET /v1/fs/entries?directory=&type=all|file|dir` | 200 `{"entries":[{name,path,type,size,modifiedMs}]}` sorted by path; type defaults to all |
+| `GET /v1/fs/file?path=` | 200 raw bytes / 404 |
+| `PUT /v1/fs/file?path=` | raw body → 200 `{path,size}`; creates parents and overwrites |
+| `DELETE /v1/fs/entry?path=` | 204; recursive for directories; missing is 404 |
+| `POST /v1/fs/mkdir` | `{directory,name}` → 200 `{path}`; name is one component |
+| `POST /v1/fs/move` | `{source,destination}` → 200 `{path}`; same-filesystem rename, overwrite destination |
+| `GET /v1/fs/stat?path=` | `{path,type,size,modifiedMs,mode}`; mode is uint32 |
+| `POST /v1/fs/upload-batch?directory=` | staged safe tar.gz extraction → `{files:[{path,size}]}` |
+| `GET/PUT/DELETE /v1/config/{mcp,skills}?directory=` | JSON object at `{resolved directory}/.agent-bridge/config/{mcp,skills}.json` |
+
+- Processes use pipes/no TTY and independent process groups. Stop, kill, timeout, reaper, and shutdown signal the group. Logs are base64 8KiB chunks in bridge-observed order; there is no stdin-close endpoint.
+- One-shot output caps apply independently. Invalid UTF-8 is replaced. Timeout defaults to `defaultRunTimeoutMs` and cannot exceed `maxRunTimeoutMs`; output cap defaults to and cannot exceed active `maxOutputBytes`.
+- Snapshots are `{id,command,args,cwd,status,pid?,exitCode?,createdAtMs,exitedAtMs?}` sorted by ID. Request env merges over sanitized inherited env; cwd defaults to bridge cwd. Config values are positive, require default timeout ≤ max timeout, and lowering concurrency does not kill running processes.
+- The sandbox is the filesystem boundary. Absolute paths are direct; safe relative paths resolve under `$HOME`. Relative `..`, NUL, and missing HOME are 400.
+- Upload rejects absolute/escaping names, links/devices, and existing symlink components; compressed and extracted limits are 512MiB; validate/extract in staging before merge.
+- PUT/move/upload overwrite files; existing mkdir succeeds. Config PUT and DELETE return 204 empty; writes are atomic mode 0600. Missing GET/DELETE is 404.
+- MCP config values are `{command:string,args?:string[],env?:map[string]string}`; skills accepts any JSON object; non-object PUT is 400.
+- Body limits: ACP/JSON 10MiB, process input active limit, FS PUT 512MiB, upload 512MiB compressed/extracted; excess is 413.
+
+### Environment, shutdown, and image
+
+- Defaults: `AGENT_BRIDGE_HOST=127.0.0.1`, `AGENT_BRIDGE_PORT=2468`, `AGENT_BRIDGE_LOG_LEVEL=info`, `AGENT_BRIDGE_DB=./agent-bridge.db`; runtime image sets host `0.0.0.0`.
+- Optional `AGENT_BRIDGE_PID_FILE` is created after startup and removed on clean shutdown.
+- SIGINT/SIGTERM stops acceptance, closes SSE, kills ACP/managed process groups, waits for pumps/DB commits, checkpoints/closes SQLite, removes PID file, and exits 0 within 10s.
+- Request logs include method, URI, status, latency, and never Authorization.
+- Runtime pins: Claude adapter 0.68.0, Codex adapter 1.3.0, OpenCode 1.18.18, Node 24 slim pinned by digest at implementation.
+- Preserve npm optional dependencies/lifecycle scripts; use committed package/lockfile with `npm ci`; run non-root with `DISABLE_AUTOUPDATER=1`, `NO_BROWSER=1`. Expected image ≥1GB.
+- Keyless e2e: all initialize; Claude/Codex session creation may return auth-required; OpenCode session creation succeeds and auth may fail at prompt. OpenCode 1.18.18 may omit sessionId from `session/load`.
+
+## Reference Implementation
+
+Rust source of truth: `/home/viethoangcr/Workspace/github/rivet/sandbox-agent`.
+
+- `server/packages/acp-http-adapter/src/process.rs`: stdio matching, synthetic events, SSE, stderr tail.
+- `server/packages/sandbox-agent/src/acp_proxy_runtime.rs`: lifecycle, resolution, deletion, shutdown.
+- `server/packages/sandbox-agent/src/router.rs` and `router/support.rs`: handlers, negotiation, errors, path behavior.
+- `server/packages/sandbox-agent/src/process_runtime.rs`: process limits and behavior.
+
+The Go port replaces Rust in-memory state with SQLite and adds status/events endpoints. It is a compatible superset, not internal parity.
+
+## Target Architecture
+
+```mermaid
+flowchart LR
+    Client[Remote ACP client] -->|HTTP POST and SSE| Server[agent-bridge HTTP server]
+    Server --> Proxy[ACP proxy]
+    Proxy -->|JSONL stdio| Agent[Agent process group]
+    Proxy --> Store[(SQLite state and events)]
+    Server --> Processes[Managed process groups]
+    Server --> Files[Sandbox filesystem and config]
 ```
-**Files:** `docker/runtime/Dockerfile`, `docker/runtime/versions.env`, `Makefile`
-**Test:** build the image; run `docker run --rm <img> sh -c 'which claude-agent-acp codex-acp opencode && claude-agent-acp --version && codex-acp --version && opencode --version'` → all three resolve + print versions.
-**Verify:** `make image && docker run --rm agent-bridge:latest sh -c 'which claude-agent-acp codex-acp opencode && claude-agent-acp --version && codex-acp --version && opencode --version'`
 
-- [ ] Dockerfile with ARG pins (base node:24-slim, exact verified install commands)
-- [ ] versions.env + Makefile wiring
-- [ ] ENTRYPOINT + image size documented in README (expect ~1GB)
+## Implementation Plans
 
-**Risk:** Low. **Reversibility:** Easy.
+Execute in numeric order except phases 04 and 05 may run after phase 01 in parallel with phases 02-03.
 
-### Task 5.2: Agent boot verification recipe
-
-**Description:** `scripts/verify-agents.sh`: for each agent, spawn the adapter, send `initialize` envelope on stdin, assert a valid response with `protocolVersion` (numeric 1) comes back within 30s; print pass/fail. Run inside the image. Catches broken adapter installs / version skew at build time.
-**Files:** `scripts/verify-agents.sh`
-**Test:** run in the built image for all 3 agents.
-**Verify:** `docker run --rm -i agent-bridge:latest sh scripts/verify-agents.sh` (all 3 PASS)
-
-- [ ] initialize-handshake script (printf JSONL, read reply, jq-less assertion via grep)
-
-**Risk:** Low. **Reversibility:** Easy.
-
----
-
-## Phase 6: E2E + hardening
-
-### Task 6.1: Docker e2e tests
-
-**Description:** `tests/e2e/e2e_test.go` (build tag `e2e`): builds image (docker CLI via `os/exec`, tag cached in package-level var — no cross-process cache, mirrors Rust in-memory pattern), runs container with server (port map 2468, token env), waits for health, then per agent runs the verified keyless matrix:
-
-| Agent | `initialize` | `session/new` | `session/prompt` | resume (`session/load`) |
-|---|---|---|---|---|
-| claude | strict: 200, `protocolVersion:1`, schema-required fields | accept auth-required error envelope as pass | lenient (accept error) | lenient (agent's own disk persists; accept worker error if unreachable keyless) |
-| codex | strict (same) | accept `-32000`-style auth error as pass | lenient | lenient |
-| opencode | strict | strict: `sessionId` returned | lenient (auth may surface here) | lenient; assert `session/load` returns (accept its open bug of omitting `sessionId` — use the stored id) |
-| mock | strict | strict | strict: ≥1 `agent_message_chunk` notification BEFORE the response; response `stopReason:"end_turn"` | strict: `session/new` → capture id → `session/load`/{sessionId, cwd, mcpServers:[]} → response echoes id |
-
-Assertions: `initialize` request uses integer `protocolVersion:1`; prompt response envelope carries `result.stopReason` (turn completion is the response, not a notification); no `authenticate` call when `authMethods` is empty. **State/scaling scenario (`#STATE`):** `session/new` → `GET /status` = `idle` → `POST session/prompt` → `GET /status` = `busy` → disconnect (no DELETE) → `GET /status` still queryable → reconnect and `POST session/{load,new}` resumes (mock strict; real agents lenient). **History:** `GET /{serverId}/events?sessionId=` returns the recorded envelopes in `seq` order. Plus fs write/read + process run through the live server.
-**Files:** `tests/e2e/e2e_test.go`, `tests/e2e/docker.go`
-**Test:** n/a (this IS the test layer).
-**Verify:** `make e2e` (requires docker daemon)
-
-- [ ] docker helper: build (cached tag), run, wait-health, teardown
-- [ ] ACP e2e per agent per keyless matrix
-- [ ] mock agent full strict flow (notifications-before-response ordering)
-- [ ] state/scaling + history assertions (status transitions, reconnect-resume, `/events` query)
-- [ ] fs + process e2e against live server
-
-**Risk:** Medium (external docker dependency). **Reversibility:** Easy.
-
-### Task 6.2: Hardening
-
-**Description:** request body cap (10MiB) with 413; per-request timeouts (server-level `http.Server` ReadHeaderTimeout); slog structured logs (method/uri/status/latency, redact Authorization); pid file for ops tooling (AGENT_BRIDGE_PID_FILE, written at start, removed on shutdown); agent stderr tail attached to 502 problem detail (mirror Rust `agentStderr`); **idle-reaper integration** (`#STATE`): a serverId idle beyond `AGENT_BRIDGE_IDLE_TTL_MS` has its subprocess killed and status flipped to `exited` while event/session rows remain; integration test: SIGTERM → agent subprocess dead (verify via kill -0), server exits 0, DB file flushed.
-**Files:** `internal/server/middleware.go`, `internal/server/logging.go`, `internal/server/shutdown_test.go`, `internal/acp/reaper.go`, `cmd/agent-bridge/main.go`
-**Test:** write first: 413 on oversize POST; idle-reaper test (tiny TTL, mock sleeps) asserts kill + `exited` status + preserved history; shutdown test spawns server + mock agent, SIGTERM, asserts child gone.
-**Verify:** `go test ./internal/server/ -v -run 'BodyCap|Shutdown'`, `go test ./internal/acp/ -v -run Reaper`
-
-- [ ] body cap middleware
-- [ ] request logging (slog, auth redaction)
-- [ ] stderr-tail in 502 detail
-- [ ] idle-reaper sweep (kill + `exited` marker, preserve history)
-- [ ] pid file + shutdown integration test
-
-**Risk:** Low. **Reversibility:** Easy.
-
-### Task 6.3: Docs
-
-**Description:** README: build, run, env reference table, agent resolution rules, image pinning (how to bump versions), API summary, sandbox deployment sketch. Keep aligned with implemented endpoints only.
-**Files:** `README.md`
-**Test:** none.
-**Verify:** `make vet && go test ./...` green; README env table matches `cmd/agent-bridge/main.go` env parsing (manual check).
-
-- [ ] Full env var table + agent mapping
-- [ ] Version-bump procedure for images
-- [ ] API summary with curl examples
-
-**Risk:** Low. **Reversibility:** Easy.
-
----
-
-## Dependencies
-
-| Task | Depends On |
-|------|------------|
-| 0.2 | 0.1 |
-| 1.1 | 0.2 |
-| 1.2 | 1.1 |
-| 1.3 | 1.2 |
-| 1.4 | 1.3 |
-| 2.1 | 0.2 |
-| 2.2 | 2.1 |
-| 3.1 | 0.2 |
-| 4.1 | 0.2 |
-| 5.1 | 1.4 (needs working binary) |
-| 5.2 | 5.1 |
-| 6.1 | 5.1 |
-| 6.2 | 1.4, 2.1, 1.3 (reaper) |
-| 6.3 | 6.2 |
-
-Phases 2/3/4 are independent of Phase 1 and of each other; can be built in parallel by different builders.
+1. [Phase 01: Scaffolding and server foundation](20260823-01-scaffolding.md)
+2. [Phase 02: ACP persistence and stdio runtime](20260823-02-acp-persistence-runtime.md)
+3. [Phase 03: ACP proxy and HTTP lifecycle](20260823-03-acp-http-lifecycle.md)
+4. [Phase 04: Processes API](20260823-04-process-api.md)
+5. [Phase 05: Filesystem and config APIs](20260823-05-filesystem-config.md)
+6. [Phase 06: Runtime image, E2E, hardening, and docs](20260823-06-runtime-image-e2e.md)
 
 ## Open Questions
 
-- ~~Keyless behavior of real adapters in e2e~~ — RESOLVED (verified 2026-08-15): all three complete `initialize` keyless; opencode completes `session/new` keyless; claude/codex fail `session/new` with auth-required — encoded in Task 6.1 matrix.
-- ~~Whether codex-acp requires the native codex CLI in the image~~ — RESOLVED: no, both adapters bundle native binaries via npm optionalDependencies (~640MB combined); install must keep optional deps.
-- **Session resume support** — RESOLVED (verified 2026-08-23): all three agents (claude-agent-acp 0.68.0, codex-acp 1.3.0, opencode 1.18.18) advertise `loadSession:true` + `sessionCapabilities.resume` and persist sessions to disk; `session/resume` is stable since 2026-04-22. Bridge stays a passthrough. **Caveat:** opencode 1.18.18 `session/load` omits `sessionId` in its response (opencode #42442, open) — client/bridge relies on the `sessionId` from `session/new`. Pin/verify against this at e2e.
-- ~~How to reconcile "Go stdlib only" with an SQLite store~~ — RESOLVED: single narrow exception for `modernc.org/sqlite` (pure Go, CGO-free, static build) via `database/sql`.
-- JSON-RPC `id:null` vs absent (notification detection) and `mode` type on `stat` — minor; decide at implementation.
-- Per-sandbox vs shared `AGENT_BRIDGE_TOKEN` for thousands of sandboxes — orchestrator responsibility; bridge assumes one token per sandbox. Confirm with the sandbox deployer.
-- Terminal/PTY later: plan is pipes-only by client decision; extension point documented in README (add `creack/pty` + WS then).
-- Full authenticated prompt e2e (real keys): needs sandbox credentials; deferred until CI has a test key vault — strict prompt flow currently covered by `mock` agent only.
+- Confirm the orchestrator supplies one `AGENT_BRIDGE_TOKEN` per sandbox and includes it in health probes.
+- Confirm sandbox storage persists agent home directories and `AGENT_BRIDGE_DB` for the required resume lifetime.
+- Full authenticated real-agent prompt/resume E2E remains deferred until CI provides isolated test credentials; mock covers strict protocol flow meanwhile.

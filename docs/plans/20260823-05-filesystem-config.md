@@ -1,0 +1,421 @@
+# Plan: Phase 05 - Filesystem and Config APIs
+
+**Date:** 2026-08-23
+**Status:** DRAFT
+**Risk Level:** High
+
+---
+
+## Overview
+
+Implement the Linux filesystem and per-project configuration APIs for `agent-bridge`. This phase ports the externally relevant Rust path behavior, adds bounded staged `tar.gz` uploads with traversal and symlink defenses, and provides atomic mode-0600 MCP and skills JSON files using only the Go standard library.
+
+## Phase Goal
+
+Deliver all `/v1/fs/*` and `/v1/config/{mcp,skills}` routes with deterministic responses, RFC 9457 errors, strict body limits, safe upload extraction, and atomic configuration replacement. The phase is complete only when service tests and HTTP contract tests cover success, validation, limits, and failure atomicity.
+
+## References And Assumptions
+
+### Authoritative References
+
+- `docs/plans/20260815-agent-bridge.md`, especially "Platform and dependencies", "Authentication and errors", and "Non-ACP endpoints".
+- Rust behavior reference: `/home/viethoangcr/Workspace/github/rivet/sandbox-agent/server/packages/sandbox-agent/src/router/support.rs`, symbols `resolve_fs_path` and `sanitize_relative_path`.
+- Rust handler reference: `/home/viethoangcr/Workspace/github/rivet/sandbox-agent/server/packages/sandbox-agent/src/router.rs`, symbols `get_v1_fs_entries`, `get_v1_fs_file`, `put_v1_fs_file`, `delete_v1_fs_entry`, `post_v1_fs_mkdir`, `post_v1_fs_move`, `get_v1_fs_stat`, `post_v1_fs_upload_batch`, and the config handlers.
+
+### Assumptions Fixed By This Plan
+
+- Phase 01 provides module `github.com/viethoangcr/agent-bridge` and the standard `internal/httpapi.Server` in `internal/httpapi/server.go`, plus RFC 9457 `Problem` responses, JSON decoding, route registration, authentication, and body-limit helpers. Phase 05 extends that exact server type rather than introducing an adapter or parallel router.
+- The revised specification overrides current Rust details: relative filesystem paths resolve under `$HOME`, config endpoints replace one whole JSON object, uploads are gzip-compressed tar archives, delete is recursive for directories, and uploads return file path/size objects.
+- General filesystem endpoints may follow symlinks because the sandbox itself is the trust boundary. Upload is stricter: archive links/devices and every existing symlink component below the destination are rejected.
+- Upload permits only regular files and directories. Existing regular files are overwritten; existing directories are reused; file/directory type conflicts are rejected. Validation or staging failure leaves the destination unchanged. A filesystem error during the final multi-file merge can leave a partial merge; the specification does not require a transactional directory swap.
+- No new module is allowed. Use `archive/tar`, `compress/gzip`, `encoding/json`, `io`, `io/fs`, `os`, `path/filepath`, `sort`, `sync`, and `time`.
+
+## Requirements
+
+- Absolute paths are used directly. Safe relative paths resolve under `$HOME`.
+- Reject relative parent components, NUL bytes, and relative paths when `HOME` is empty or unset with 400.
+- `GET /v1/fs/entries?directory=&type=all|file|dir` defaults `type` to `all` and returns 200 `{"entries":[{"name","path","type","size","modifiedMs"}]}` sorted by path; entry `type` values are only `file` or `dir`.
+- `GET /v1/fs/file?path=` streams raw bytes as `application/octet-stream`.
+- `PUT /v1/fs/file?path=` accepts at most 512 MiB, creates parents, overwrites the file, and returns 200 `{path,size}`.
+- `DELETE /v1/fs/entry?path=` removes files and recursively removes directories, returns 204 empty, and returns 404 for a missing path.
+- `POST /v1/fs/mkdir` accepts `{directory,name}` where `name` is exactly one non-dot path component, returns 200 `{path}`, and succeeds for an existing directory.
+- `POST /v1/fs/move` accepts `{source,destination}`, creates destination parents, uses same-filesystem `os.Rename`, overwrites the destination, and returns 200 `{path}` containing the resolved destination path.
+- `GET /v1/fs/stat?path=` returns `{path,type,size,modifiedMs,mode}` with `type` set to `file` or `dir`, mode converted to `uint32`, and modification time as Unix milliseconds.
+- `POST /v1/fs/upload-batch?directory=` enforces 512 MiB compressed and cumulative extracted limits, validates the complete archive, extracts into staging, rejects unsafe entries and destination symlink components, then merges.
+- Config files are exactly `{resolved directory}/.agent-bridge/config/mcp.json` and `{resolved directory}/.agent-bridge/config/skills.json`.
+- Config PUT accepts one JSON object. MCP values are `{command:string,args?:string[],env?:map[string]string}`; skills values may be any JSON object. Arrays, scalars, `null`, unknown MCP fields, empty MCP commands, and trailing JSON are 400.
+- Config writes use same-directory temporary files, mode 0600, `fsync`, atomic rename, and directory `fsync`. PUT and DELETE return 204 empty; missing GET and DELETE return 404.
+- All malformed inputs, missing query values, OS failures, and body-limit failures use the shared `application/problem+json` response path; payload excess is 413.
+
+## Target State
+
+```mermaid
+flowchart LR
+    HTTP[FS and config HTTP handlers] --> Paths[Path resolver]
+    HTTP --> FS[Filesystem service]
+    HTTP --> Config[Config service]
+    FS --> Stage[Validated tar.gz staging]
+    Stage --> Sandbox[Sandbox filesystem]
+    Config --> Atomic[0600 temp + fsync + rename]
+    Atomic --> Project[Project config files]
+```
+
+## Interfaces
+
+### `internal/filesystem.Service`
+
+```go
+const MaxFileBytes int64 = 512 << 20
+const MaxUploadCompressedBytes int64 = 512 << 20
+const MaxUploadExtractedBytes int64 = 512 << 20
+
+type Entry struct {
+    Name       string `json:"name"`
+    Path       string `json:"path"`
+    Type       string `json:"type"`
+    Size       int64  `json:"size"`
+    ModifiedMs int64  `json:"modifiedMs"`
+}
+
+type Stat struct {
+    Path       string `json:"path"`
+    Type       string `json:"type"`
+    Size       int64  `json:"size"`
+    ModifiedMs int64  `json:"modifiedMs"`
+    Mode       uint32 `json:"mode"`
+}
+
+type UploadedFile struct {
+    Path string `json:"path"`
+    Size int64  `json:"size"`
+}
+
+type FileResult struct {
+    Path string `json:"path"`
+    Size int64  `json:"size"`
+}
+
+type PathResult struct {
+    Path string `json:"path"`
+}
+
+type Service struct { /* immutable HOME plus upload coordination */ }
+
+func New(home string) (*Service, error)
+func (s *Service) Resolve(raw string) (string, error)
+func (s *Service) Entries(directory, entryType string) ([]Entry, error)
+func (s *Service) Open(path string) (*os.File, Stat, error)
+func (s *Service) WriteFile(path string, src io.Reader) (FileResult, error)
+func (s *Service) Remove(path string) error
+func (s *Service) Mkdir(directory, name string) (PathResult, error)
+func (s *Service) Move(source, destination string) (PathResult, error)
+func (s *Service) Stat(path string) (Stat, error)
+func (s *Service) Upload(directory string, src io.Reader) ([]UploadedFile, error)
+```
+
+- `New` may receive an empty home so absolute paths continue to work; only resolving a relative path then fails.
+- Service errors preserve a machine-readable kind (`invalid`, `not_found`, `conflict`, `too_large`, `internal`) for the HTTP adapter.
+- `Open` returns an open descriptor so the handler does not check then reopen a potentially changed path.
+- `Upload` owns the complete gzip/tar validation, staging cleanup, and merge. The handler additionally enforces the compressed HTTP body limit.
+
+### `internal/projectconfig.Service`
+
+```go
+type MCPServer struct {
+    Command string            `json:"command"`
+    Args    []string          `json:"args,omitempty"`
+    Env     map[string]string `json:"env,omitempty"`
+}
+
+type Service struct { /* filesystem resolver plus write mutex */ }
+
+func New(files *filesystem.Service) *Service
+func (s *Service) Get(kind, directory string) (json.RawMessage, error)
+func (s *Service) Put(kind, directory string, body json.RawMessage) error
+func (s *Service) Delete(kind, directory string) error
+```
+
+- `kind` is internal and must be exactly `mcp` or `skills`; routes do not accept arbitrary filenames.
+- MCP is decoded as `map[string]MCPServer` with unknown fields rejected. Skills is decoded as `map[string]json.RawMessage` so each top-level value can have arbitrary JSON shape.
+- `Put` serializes a canonical indented object plus trailing newline before atomic replacement.
+
+### `internal/httpapi.Server`
+
+```go
+type fsMkdirRequest struct {
+    Directory string `json:"directory"`
+    Name      string `json:"name"`
+}
+
+type fsMoveRequest struct {
+    Source      string `json:"source"`
+    Destination string `json:"destination"`
+}
+
+func (s *Server) registerFilesystemRoutes(mux *http.ServeMux)
+func (s *Server) handleFSEntries(w http.ResponseWriter, r *http.Request)
+func (s *Server) handleFSFile(w http.ResponseWriter, r *http.Request)
+func (s *Server) handleFSEntry(w http.ResponseWriter, r *http.Request)
+func (s *Server) handleFSMkdir(w http.ResponseWriter, r *http.Request)
+func (s *Server) handleFSMove(w http.ResponseWriter, r *http.Request)
+func (s *Server) handleFSStat(w http.ResponseWriter, r *http.Request)
+func (s *Server) handleFSUploadBatch(w http.ResponseWriter, r *http.Request)
+func (s *Server) registerConfigRoutes(mux *http.ServeMux)
+func (s *Server) handleMCPConfig(w http.ResponseWriter, r *http.Request)
+func (s *Server) handleSkillsConfig(w http.ResponseWriter, r *http.Request)
+```
+
+- Extend the Phase 01 `Server` and its construction in `internal/httpapi/server.go` with shared `*filesystem.Service` and `*projectconfig.Service` fields. Do not create a second server/router type.
+
+## Tasks
+
+### Task 5.1: Implement Rust-Compatible Path Resolution And Metadata
+
+**Description:** Add the shared filesystem service, safe relative-path resolver, typed errors, deterministic entry listing, and stat conversion used by every later task.
+**Files:** Create `internal/filesystem/service.go`; create `internal/filesystem/service_test.go`.
+**Symbols:** `Service`, `New`, `Resolve`, `Entries`, `Stat`, `statFromInfo`, `validateRelativePath`, `Error`, `ErrorKind`.
+**References:** Authoritative specification sections "Non-ACP endpoints" and its filesystem/config rules; Rust `resolve_fs_path` and `sanitize_relative_path`.
+**Risk:** Medium. Incorrect normalization can expose paths outside the intended relative root or reject compatible paths.
+**Reversibility:** Easy to revert before handlers consume the service.
+**Dependencies:** Phase 01 only.
+
+**RED:**
+
+- [ ] Write table tests proving absolute paths remain unchanged and are cleaned only with `filepath.Clean` semantics.
+- [ ] Write tests proving `a/./b` resolves below HOME, while `../a`, `a/../b`, NUL, and empty HOME with a relative path return `invalid`.
+- [ ] Write tests for empty relative path resolving to HOME, Linux backslashes remaining ordinary filename characters, and absolute paths working without HOME.
+- [ ] Write tests for sorted entries, omitted/`all` filters returning both `file` and `dir`, `file` and `dir` filters returning only their exact type, invalid filter rejection, missing/not-directory errors, symlink-following compatibility, millisecond timestamps, and `uint32(info.Mode())`.
+- [ ] Run `go test ./internal/filesystem -run 'Test(ServiceResolve|ServiceEntries|ServiceStat)'` and record the expected compile/test failure.
+
+**GREEN:**
+
+- [ ] Capture HOME once in `New`; do not read mutable process environment per request.
+- [ ] Reject NUL before `filepath` operations. For relative paths, iterate cleaned lexical components and reject every `..`; do not use prefix-string containment checks.
+- [ ] Map `fs.ErrNotExist` to `not_found`, invalid input to `invalid`, destination/type collisions to `conflict`, and unexpected I/O to `internal` without exposing stack traces.
+- [ ] Use `os.ReadDir`, `DirEntry.Info`, and explicit `sort.Slice` by absolute path.
+- [ ] Implement `Stat` from `os.Stat`, mapping regular files to `file` and directories to `dir`; unsupported entry types return `invalid`.
+- [ ] Run `gofmt -w internal/filesystem/service.go internal/filesystem/service_test.go`.
+
+**Verify:** `go test ./internal/filesystem -run 'Test(ServiceResolve|ServiceEntries|ServiceStat)' -count=1`
+
+### Task 5.2: Implement Core Filesystem Mutations
+
+**Description:** Add raw file open/write, recursive delete, one-component mkdir, and overwrite rename while retaining exact error semantics.
+**Files:** Modify `internal/filesystem/service.go`; modify `internal/filesystem/service_test.go`.
+**Symbols:** `Open`, `WriteFile`, `Remove`, `Mkdir`, `Move`, `validateName`, `removeDestination`.
+**References:** Interfaces in this plan; specification FS endpoint table and overwrite rules.
+**Risk:** High. Delete and overwrite bugs can destroy unintended sandbox data.
+**Reversibility:** Code is easy to revert; filesystem side effects in a live sandbox are irreversible, so tests must use `t.TempDir()`.
+**Dependencies:** Task 5.1.
+
+**RED:**
+
+- [ ] Test binary-safe read and overwrite write, parent creation, directory-as-file rejection, and source read failure without a successful response.
+- [ ] Test recursive directory deletion, file deletion, and 404-equivalent missing deletion.
+- [ ] Test mkdir idempotence and reject empty, `.`, `..`, slash-containing, and NUL names.
+- [ ] Test `Move(source, destination)` creates destination parents, overwrites files and destination directories, rejects a missing source, returns the resolved destination path, and surfaces cross-device `EXDEV` without copy fallback.
+- [ ] Run `go test ./internal/filesystem -run 'TestService(Open|WriteFile|Remove|Mkdir|Move)'` and record failure.
+
+**GREEN:**
+
+- [ ] Use `os.Open` plus descriptor `Stat` for reads.
+- [ ] Stream writes through a same-directory temporary file and rename it over the target so failed reads do not truncate an existing destination; create missing parents first.
+- [ ] Keep PUT-created file permissions at 0644 subject to umask; config permissions are handled separately.
+- [ ] Use `os.Lstat` before deletion so a symlink itself is removed rather than recursively following it.
+- [ ] Validate mkdir `name` with `filepath.Base(name) == name` plus explicit dot/NUL rejection.
+- [ ] For `Move(source, destination)`, remove an existing destination with `os.RemoveAll`, then call `os.Rename(source, destination)`; preserve overwrite behavior and do not implement cross-filesystem copying.
+
+**Verify:** `go test ./internal/filesystem -run 'TestService(Open|WriteFile|Remove|Mkdir|Move)' -count=1`
+
+### Task 5.3: Validate And Stage Bounded Tar.Gz Uploads
+
+**Description:** Parse and validate an entire gzip-compressed tar stream, enforce both limits, reject dangerous entries, and extract only into a destination-filesystem staging directory.
+**Files:** Create `internal/filesystem/upload.go`; create `internal/filesystem/upload_test.go`.
+**Symbols:** `Upload`, `validateArchivePath`, `archiveManifest`, `archiveItem`, `countingReader`, `extractArchive`, `rejectSymlinkComponents`.
+**References:** `MaxUploadCompressedBytes`, `MaxUploadExtractedBytes`, specification upload requirements.
+**Risk:** High. Archive extraction is an untrusted-input boundary with traversal, decompression bomb, and symlink risks.
+**Reversibility:** Easy to revert; staging is temporary and must be cleaned on all exits.
+**Dependencies:** Tasks 5.1-5.2.
+
+**RED:**
+
+- [ ] Build archives in tests with stdlib helpers and cover regular files, directories, nested files, empty archives, and deterministic response sorting.
+- [ ] Test rejection of absolute names, `..` at any component, empty/NUL names, symlink and hard-link entries, character/block devices, FIFO, sparse/unknown types, duplicate paths, and file/parent conflicts.
+- [ ] Test compressed input at limit and limit+1, cumulative declared/actual extracted size at limit and limit+1, truncated gzip, corrupt tar, and headers lying about content size.
+- [ ] Test that invalid archives and extraction failures leave a pre-existing destination byte-for-byte unchanged and leave no staging directory.
+- [ ] Test existing symlinks at destination root descendants and parent components are rejected, including a symlink pointing back inside the destination.
+- [ ] Run `go test ./internal/filesystem -run 'TestUpload'` and record failure.
+
+**GREEN:**
+
+- [ ] Wrap input with a max+1 counting reader, reject once compressed bytes exceed 512 MiB, and close `gzip.Reader` on every path.
+- [ ] Validate each tar header lexically with `filepath.IsAbs` and component iteration before joining. Accept only `tar.TypeReg`, `tar.TypeRegA`, and `tar.TypeDir`.
+- [ ] Sum regular-file header sizes with overflow checks before copying, then enforce actual copied bytes with `io.LimitedReader`; reject negative sizes and short entries.
+- [ ] Detect duplicate normalized names and ancestor/descendant type conflicts before destination mutation.
+- [ ] Create staging with `os.MkdirTemp` under the resolved destination's nearest existing parent so final renames stay on one filesystem; always defer `os.RemoveAll`.
+- [ ] Extract files with `O_CREATE|O_EXCL|O_WRONLY`, directories with 0755, and files with archive permission bits masked to 0777. Do not apply ownership, setuid/setgid, device, or timestamp metadata.
+- [ ] Before merge, walk each existing destination component with `os.Lstat`; reject any symlink. Repeat immediately before each final rename to narrow TOCTOU exposure.
+- [ ] Return only regular files as `{path,size}`, sorted by final absolute path.
+
+**Verify:** `go test ./internal/filesystem -run 'TestUpload' -count=1`
+
+### Task 5.4: Merge Validated Uploads With Defined Overwrite Semantics
+
+**Description:** Complete upload by merging only after validation/extraction succeeds, preserving existing directories and replacing regular files.
+**Files:** Modify `internal/filesystem/upload.go`; modify `internal/filesystem/upload_test.go`.
+**Symbols:** `mergeStaging`, `preflightMerge`, `mergeItem`.
+**References:** Task 5.3 manifest; specification "validate/extract in staging before merge" and overwrite requirements.
+**Risk:** High. Merge ordering and destination type conflicts can produce partial or destructive results.
+**Reversibility:** Needs backup for real destination data; tests use temporary trees.
+**Dependencies:** Task 5.3.
+
+**RED:**
+
+- [ ] Test overwrite of existing regular files, reuse of existing directories, creation of nested trees, and preservation of unrelated destination files.
+- [ ] Test preflight rejection when archive file meets destination directory, archive directory meets destination file, or any destination component is a symlink; assert no destination changes.
+- [ ] Test a forced merge I/O failure returns `internal` and always removes staging.
+- [ ] Run `go test ./internal/filesystem -run 'TestUploadMerge'` and record failure.
+
+**GREEN:**
+
+- [ ] Preflight every manifest destination before the first mutation, including type conflicts and symlink components.
+- [ ] Create directories shallowest-first, then move files in sorted order using same-directory temporary destination names and `os.Rename` replacement.
+- [ ] Do not delete unrelated destination content and do not claim full transactionality after merge begins.
+- [ ] Serialize uploads per `Service` with one mutex so two bridge requests cannot interleave preflight and merge. Document this bounded, process-local serialization in code.
+
+**Verify:** `go test ./internal/filesystem -run 'TestUpload(Merge|Symlink|Limit|Invalid)' -count=1`
+
+### Task 5.5: Expose Filesystem HTTP Handlers
+
+**Description:** Register all filesystem routes and translate service values/errors into the exact HTTP contract and shared problem format.
+**Files:** Create `internal/httpapi/filesystem.go`; create `internal/httpapi/filesystem_test.go`; modify `internal/httpapi/server.go` to inject `*filesystem.Service` and register routes.
+**Symbols:** `registerFilesystemRoutes`, `handleFSEntries`, `handleFSFile`, `handleFSEntry`, `handleFSMkdir`, `handleFSMove`, `handleFSStat`, `handleFSUploadBatch`, `writeFilesystemError`.
+**References:** Phase 01 HTTP helpers and all filesystem interfaces in this plan.
+**Risk:** Medium. Incorrect limits or route patterns can bypass service protections.
+**Reversibility:** Easy to revert.
+**Dependencies:** Tasks 5.1-5.4 and Phase 01.
+
+**RED:**
+
+- [ ] Add `httptest` table coverage for every method/path, required query parameter, exact status/body, content type, sorting, 404, 409, and malformed JSON case.
+- [ ] Test entries omission defaults to `all`; `all|file|dir` filtering and `file|dir` response values are exact; unknown or repeated `type` is 400; the body is `{"entries":[...]}` sorted by path.
+- [ ] Test `GET /v1/fs/file` returns exact arbitrary bytes; PUT accepts exactly 512 MiB, overwrites, and returns 200 `{"path":<resolved path>,"size":<bytes>}`; 512 MiB+1 returns 413 without changing an existing file.
+- [ ] Test DELETE file/directory returns 204 with an empty body and missing returns 404.
+- [ ] Test mkdir decodes exactly `{directory,name}`, is idempotent, and returns 200 `{"path":<resolved path>}`.
+- [ ] Test move decodes exactly `{source,destination}`, rejects legacy/unknown fields, preserves overwrite behavior, and returns 200 `{"path":<resolved destination>}`.
+- [ ] Test upload accepts gzip data without requiring a Content-Type, returns `{"files":[...]}`, rejects compressed excess with 413, and maps unsafe archives to 400.
+- [ ] Test auth still applies to every new `/v1/*` route and wrong methods are shared problem+json 405 responses.
+- [ ] Run `go test ./internal/httpapi -run 'TestFS'` and record failure.
+
+**GREEN:**
+
+- [ ] Register Go 1.26 patterns for the exact endpoints; use one method-switch handler only where GET and PUT share a path.
+- [ ] Require non-empty `directory`/`path` query values where specified; reject duplicate ambiguous values through the Phase 01 query helper.
+- [ ] Use `http.MaxBytesReader` with max+1 detection for PUT and upload. Stream rather than calling `io.ReadAll` for 512 MiB bodies.
+- [ ] Stream opened files with `io.Copy`; set `Content-Length` from descriptor metadata and `application/octet-stream`.
+- [ ] Decode mkdir `{directory,name}` and move `{source,destination}` with the shared 10 MiB JSON limit, exactly one JSON value, and unknown fields rejected; use `source` and `destination` names through handler/service calls.
+- [ ] Encode only the exact master responses: entries wrapper, PUT `{path,size}`, empty DELETE 204, mkdir/move `{path}`, stat object, and upload files wrapper.
+- [ ] Map typed service errors to 400/404/409/413/500 RFC 9457 responses without leaking host paths for unexpected errors.
+
+**Verify:** `go test ./internal/httpapi -run 'TestFS' -count=1`
+
+### Task 5.6: Implement Atomic MCP And Skills Config Service
+
+**Description:** Validate complete project config objects and atomically replace or remove the fixed config files with mode 0600.
+**Files:** Create `internal/projectconfig/service.go`; create `internal/projectconfig/service_test.go`.
+**Symbols:** `MCPServer`, `Service`, `New`, `Get`, `Put`, `Delete`, `configPath`, `validateMCP`, `validateSkills`, `writeAtomic`.
+**References:** Config interfaces in this plan; authoritative specification section "Non-ACP endpoints" for exact config location, schema, status, and atomic-write requirements.
+**Risk:** High. Non-atomic or concurrent writes can corrupt user project configuration.
+**Reversibility:** Code is easy to revert; replacing user config requires backup, so tests use temporary projects.
+**Dependencies:** Task 5.1.
+
+**RED:**
+
+- [ ] Test absolute and HOME-relative project directories resolve exactly to `<project>/.agent-bridge/config/mcp.json` and `<project>/.agent-bridge/config/skills.json`, with no alternate config root created.
+- [ ] Test MCP accepts valid command/args/env maps and rejects non-object top level, malformed JSON, null, unknown fields, empty command, non-string args/env, and trailing data.
+- [ ] Test skills accepts an empty object and arbitrary nested values but rejects arrays, scalars, null, malformed JSON, and trailing data.
+- [ ] Test pretty JSON plus newline, file mode 0600 on create and overwrite, parent mode subject to umask, missing GET/DELETE as `not_found`, and no temp-file residue.
+- [ ] Test a failed replacement leaves previous bytes intact and concurrent PUT/GET never observes malformed or partial JSON.
+- [ ] Run `go test ./internal/projectconfig` and record the expected compile/test failure.
+
+**GREEN:**
+
+- [ ] Reuse `filesystem.Service.Resolve(directory)` and append only the fixed `.agent-bridge/config/<kind>.json` suffix.
+- [ ] Decode MCP with `json.Decoder.DisallowUnknownFields`; decode skills into `map[string]json.RawMessage`; require decoder EOF.
+- [ ] Serialize validated values with `json.MarshalIndent` so invalid raw bytes are never persisted.
+- [ ] Under a service mutex, create parents, `os.CreateTemp` in the target directory, `Chmod(0600)`, write, `Sync`, close, rename, then open and sync the parent directory. Defer temp cleanup.
+- [ ] On overwrite, explicitly chmod the temporary file; never rely on the existing target mode.
+- [ ] Delete under the same mutex and sync the parent directory after removal.
+
+**Verify:** `go test ./internal/projectconfig -count=1`
+
+### Task 5.7: Expose Config Handlers And Run Phase Verification
+
+**Description:** Register whole-object MCP/skills handlers, connect services in application startup, and run all phase and repository checks.
+**Files:** Create `internal/httpapi/config.go`; create `internal/httpapi/config_test.go`; modify the Phase 01 `internal/httpapi/server.go` `Server` fields/construction and route registration.
+**Symbols:** `registerConfigRoutes`, `handleMCPConfig`, `handleSkillsConfig`, `handleProjectConfig`, `writeProjectConfigError`.
+**References:** Phase 01 server construction and `internal/projectconfig.Service`.
+**Risk:** Medium. Wiring errors can expose inconsistent endpoint behavior despite correct service code.
+**Reversibility:** Easy to revert.
+**Dependencies:** Tasks 5.5-5.6 and Phase 01.
+
+**RED:**
+
+- [ ] Add HTTP tests for GET/PUT/DELETE on both routes, required `directory`, exact object round-trip, 204 empty writes/deletes, missing 404, malformed/non-object 400, and 10 MiB JSON body excess 413.
+- [ ] Add a regression test issuing concurrent PUTs and GETs through HTTP and assert every successful GET is one complete submitted object with mode 0600 on disk.
+- [ ] Run `go test ./internal/httpapi -run 'Test(MCP|Skills)Config'` and record failure.
+
+**GREEN:**
+
+- [ ] Route only `GET /v1/config/mcp`, `PUT /v1/config/mcp`, `DELETE /v1/config/mcp`, and equivalent skills patterns.
+- [ ] Preserve request JSON as `json.RawMessage` only until service validation; do not add agent-specific transformation.
+- [ ] Instantiate one shared filesystem service and one shared project-config service in the Phase 01 `internal/httpapi.Server` construction path for the process lifetime.
+- [ ] Run formatting, static analysis, focused tests, full tests, and the static build command.
+
+**Verify:**
+
+```sh
+gofmt -w internal/filesystem internal/projectconfig internal/httpapi cmd/agent-bridge
+go vet ./...
+go test ./internal/filesystem ./internal/projectconfig ./internal/httpapi -count=1
+go test ./... -count=1
+CGO_ENABLED=0 go build -trimpath -o /tmp/agent-bridge ./cmd/agent-bridge
+```
+
+## Dependencies
+
+| Task | Depends On |
+|---|---|
+| 5.1 | Phase 01 |
+| 5.2 | 5.1 |
+| 5.3 | 5.1, 5.2 |
+| 5.4 | 5.3 |
+| 5.5 | 5.1-5.4, Phase 01 |
+| 5.6 | 5.1 |
+| 5.7 | 5.5, 5.6, Phase 01 |
+
+Phase 05 may execute after Phase 01 in parallel with Phases 02-04. It must not depend on ACP or process internals.
+
+## Deliverables
+
+- Rust-compatible Linux path resolver and typed filesystem service.
+- Complete filesystem HTTP API with deterministic metadata and strict limits.
+- Fully validated staged `tar.gz` extraction with traversal, link/device, decompression, duplicate, conflict, and destination-symlink defenses.
+- Atomic mode-0600 whole-object MCP and skills config service and handlers.
+- Focused service and HTTP regression tests using only Go stdlib test tooling.
+
+## Completion Criteria
+
+- [ ] Every route listed in the Phase 05 goal is registered and protected by Phase 01 authentication/error middleware.
+- [ ] Relative, absolute, invalid, missing-HOME, and NUL path cases pass tests.
+- [ ] File PUT and upload enforce their 512 MiB limits and return 413 on excess.
+- [ ] Entries default to `all`, accept only `all|file|dir`, return only `file|dir` entry values, and are wrapped under `entries` in sorted order.
+- [ ] File PUT returns 200 `{path,size}`; entry DELETE returns 204 empty; mkdir returns 200 `{path}`; move accepts `{source,destination}` and returns 200 `{path}` while preserving overwrite behavior.
+- [ ] No rejected upload mutates its destination or leaves staging files.
+- [ ] Upload rejects every non-file/directory tar type and every existing destination symlink component.
+- [ ] Config files exist only at `{resolved directory}/.agent-bridge/config/{mcp,skills}.json`, contain complete valid JSON, are mode 0600 and atomically replaced, return 204 empty for PUT/DELETE, and return 404 for absent GET/DELETE.
+- [ ] `go vet ./...`, `go test ./... -count=1`, and the `CGO_ENABLED=0` build pass.
+
+## Open Questions
+
+- None.
