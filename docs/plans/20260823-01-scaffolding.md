@@ -142,8 +142,8 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error
 
 - [ ] Add `cmd/agent-bridge/main_test.go` asserting the command package is buildable and that cancellation is translated to a clean return through an injected/context-driven app path once implemented.
 - [ ] Add the smallest compilable injected app-run seam, then **RED evidence:** run `go test ./cmd/agent-bridge` and retain the failing cancellation/exit assertion. Any earlier missing-`internal/app` compilation failure is setup evidence only.
-- [ ] Create `go.mod` with `go 1.26`, the module path above, and no `require` entries; add `main.go` using `signal.NotifyContext` for `os.Interrupt` and `syscall.SIGTERM`, invoking `app.Run` once and exiting nonzero only for a returned startup/runtime error.
-- [ ] Add `Makefile` targets `test`, `lint`, `build`, and `check`; use `CGO_ENABLED=0 go build -trimpath -o bin/agent-bridge ./cmd/agent-bridge`, `go vet ./...`, and `go test ./...` without external tools.
+- [ ] Create `go.mod` with `go 1.26.7` (exact latest patch), the module path above, and no `require` entries; add `main.go` using `signal.NotifyContext` for `os.Interrupt` and `syscall.SIGTERM`, invoking `app.Run` once and exiting nonzero only for a returned startup/runtime error. The patch is pinned deliberately because Go 1.26.1-1.26.7 carry security fixes; CI resolves the toolchain via `go-version-file: go.mod`.
+- [ ] Add `Makefile` targets `test`, `lint`, `build`, `vuln`, and `check`; use `CGO_ENABLED=0 go build -trimpath -o bin/agent-bridge ./cmd/agent-bridge`, `go test ./...`, `go vet ./...`, and pinned dev-time tools invoked only through `go run ...@version` so no module dependency is added: `go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...` for `lint` and `go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...` for `vuln`. `check` composes `test`, `lint`, `build`, plus a `gofmt -l .` emptiness assertion and a `go mod tidy` cleanliness assertion (`go mod tidy && git diff --exit-code -- go.mod go.sum`), without other external tools.
 - [ ] **GREEN evidence:** Run `go test ./cmd/agent-bridge` and record `ok`; run `CGO_ENABLED=0 go build ./cmd/agent-bridge` and record exit status 0.
 
 **Verification:** `make check`
@@ -152,7 +152,7 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error
 
 **Reversibility:** Easy to revert; all files are new.
 
-**Deliverable:** A standard-library-only Go 1.26 module with one command and deterministic check/build commands.
+**Deliverable:** A standard-library-only Go 1.26.7-pinned module with one command and deterministic hygiene/check/build commands.
 
 ### Task 1.2: Parse and Validate Environment Configuration
 
@@ -385,8 +385,8 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error
 
 - [ ] Add `internal/projectdocs/projectdocs_test.go` that reads repository-root `README.md`, `AGENTS.md`, and `Makefile`, asserting the documented build/test commands and required Go/static/no-extra-dependency rules exist. Use only standard-library testing.
 - [ ] Create minimal placeholder documents if absent, then **RED evidence:** run `go test ./internal/projectdocs` and retain failing assertions for missing required commands, environment safety, or repository rules. Missing files alone are setup evidence only.
-- [ ] Write a README skeleton with purpose, current phase status, prerequisites, `make check`, `make build`, environment table, auth/root/health examples, the non-loopback token requirement and unsafe override warning, and a pointer to the authoritative specification. Do not advertise unfinished APIs or the private mock agent.
-- [ ] Write project `AGENTS.md` requiring master-contract precedence, numeric phase order, stdlib plus only `modernc.org/sqlite`, behavioral test-first evidence, injected clocks/limits, `CGO_ENABLED=0`, handler-level RFC 9457 errors, no public mock interface, no runtime installs, and no expansion into excluded features.
+- [ ] Write a README skeleton with purpose, current phase status, prerequisites (Go 1.26.7+), `make check`, `make build`, environment table, auth/root/health examples, the non-loopback token requirement and unsafe override warning, and a pointer to the authoritative specification. Do not advertise unfinished APIs or the private mock agent.
+- [ ] Write project `AGENTS.md` requiring master-contract precedence, numeric phase order, stdlib plus only `modernc.org/sqlite`, behavioral test-first evidence, injected clocks/limits, `CGO_ENABLED=0`, handler-level RFC 9457 errors, no public mock interface, no runtime installs, and no expansion into excluded features. Also require the pinned `go 1.26.7` toolchain, `gofmt`/`go mod tidy` cleanliness before every commit, and that `make lint` (staticcheck 2026.2.1) and `make vuln` (govulncheck v1.7.0) are green in CI, with dev-time tools run only through pinned `go run ...@version` so `go.mod`/`go.sum` stay dependency-free.
 - [ ] **GREEN evidence:** Re-run the docs test and record `ok`.
 
 **Verification:** `go test ./internal/projectdocs -count=1 && make check`
@@ -429,7 +429,10 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error
 
 - [ ] Every task has retained RED output demonstrating a behavioral assertion failed against a minimal compilable seam; missing-file/missing-symbol output is not the sole RED evidence.
 - [ ] Every task has retained GREEN output demonstrating its focused verification passed after implementation.
-- [ ] `go mod edit -json` shows Go 1.26 and no dependencies.
+- [ ] `go mod edit -json` shows Go 1.26.7 and no `require` entries.
+- [ ] `gofmt -l .` is empty and `go mod tidy` produces no `go.mod`/`go.sum` diff.
+- [ ] `go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...` reports no findings.
+- [ ] `go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...` reports no findings (network required; owned by CI).
 - [ ] `go test -race ./...` passes.
 - [ ] `go vet ./...` passes.
 - [ ] `CGO_ENABLED=0 go build -trimpath -o bin/agent-bridge ./cmd/agent-bridge` succeeds and `file bin/agent-bridge` reports no dynamic interpreter/shared-library dependency on Linux.
@@ -444,8 +447,11 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error
 ## Final Verification Commands
 
 ```sh
-go test -race ./...
+gofmt -l .
+go mod tidy && git diff --exit-code -- go.mod go.sum
 go vet ./...
+go test -race ./...
+go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...
 make build
 file bin/agent-bridge
 ```

@@ -174,7 +174,7 @@ Execute in numeric order except phases 04 and 05 may implement their isolated pa
 ## Open Questions
 
 - Confirm sandbox storage persists agent home directories and `AGENT_BRIDGE_DB` for the required resume lifetime.
-- Full authenticated real-agent prompt/resume E2E remains deferred until CI provides isolated test credentials; mock covers strict protocol flow meanwhile.
+- Live authenticated real-agent prompt/resume E2E remains deferred until CI provides isolated test credentials. Real-agent ACP transcripts recorded once per pinned agent version (Phase 06 Task 6.12) are replayed byte-exactly through the bridge (Task 6.13) and structurally against the mock (Task 6.14) in CI without credentials; recording on a credentialed machine is the only credential-gated step.
 
 ## Testing Conventions
 
@@ -182,4 +182,5 @@ Execute in numeric order except phases 04 and 05 may implement their isolated pa
 - Inject clocks, tickers, and size limits for focused tests. Keep one bounded real 15s heartbeat check and at most one streamed production-limit boundary check per large body class.
 - Process tests inspect `/proc/<pid>/stat` to distinguish zombies from running processes. Unit tests require no non-zombie descendant after group termination and explicitly clean possible orphan zombies; image tests require `tini` to reap them while the container remains alive.
 - Phase 06 adds CI ownership for unit, race, static-build, Docker E2E, and multiarchitecture verification; authenticated real-agent tests remain separately gated by credentials.
+- Real-agent compatibility is validated by dual-side ACP transcripts committed once per pinned agent version and replayed in CI: byte-exact through the bridge, structural against the mock (Phase 06 Tasks 6.12-6.14). Recording is manual and credentialed; replay is not.
 - CI uses read-only `gofmt -l` drift detection. Third-party actions are pinned to full 40-character commit SHAs. `pull_request` and pushes to `main` run unit/vet/race/static and authenticated host-architecture Docker E2E; non-publishing multiarchitecture verification runs on pushes to `main`, a weekly schedule, and `workflow_dispatch`.

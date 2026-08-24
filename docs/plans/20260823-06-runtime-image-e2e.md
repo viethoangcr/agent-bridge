@@ -12,7 +12,7 @@ Package the completed bridge and pinned ACP agents into a reproducible, target-a
 
 ## Phase Goal
 
-Produce a digest-pinned multi-stage image for Linux amd64 and arm64 that contains one static `agent-bridge` binary plus Claude Code ACP 0.68.0, Codex ACP 1.3.0, and OpenCode 1.18.18. Prove through repeatable Docker tests that keyless real-agent initialization, strict mock protocol flows, persistence/restart, idle reaping, process-group cleanup, and graceful shutdown satisfy the authoritative specification.
+Produce a digest-pinned multi-stage image for Linux amd64 and arm64 that contains one static `agent-bridge` binary plus Claude Code ACP 0.68.0, Codex ACP 1.3.0, and OpenCode 1.18.18. Prove through repeatable Docker tests that keyless real-agent initialization, strict mock protocol flows, persistence/restart, idle reaping, process-group cleanup, and graceful shutdown satisfy the authoritative specification. Record dual-side ACP transcripts from each pinned real agent once on a credentialed machine, and replay them in CI through the bridge and against the strict mock, so real-agent compatibility for all three supported agents is validated byte-exactly without credentials.
 
 ## References And Assumptions
 
@@ -447,9 +447,9 @@ grep -q 'OpenCode 1.18.18' README.md
 **GREEN:**
 
 - [ ] Create `.github/workflows/ci.yml` with least-privilege read permissions and only these triggers: `pull_request`; `push` with `branches: [main]`; one weekly `schedule`; and `workflow_dispatch`. Pin every non-local action, including GitHub-owned and Docker actions, as `owner/repository@<full-40-character-commit-SHA>`; tags, branches, abbreviated SHAs, and floating major versions are forbidden.
-- [ ] Gate formatting/unit/vet/race/static jobs and the authenticated host-architecture Docker E2E job with `if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')`. Formatting must only detect drift with `test -z "$(gofmt -l cmd internal tests)"` or an equivalent non-writing check; verification must never run `gofmt -w`. Static checks include the `CGO_ENABLED=0` build and host/tooling-stage ELF inspection.
+- [ ] Gate formatting/unit/vet/race/static jobs and the authenticated host-architecture Docker E2E job with `if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')`. Formatting must only detect drift with `test -z "$(gofmt -l cmd internal tests)"` or an equivalent non-writing check; verification must never run `gofmt -w`. Static checks include the `CGO_ENABLED=0` build, host/tooling-stage ELF inspection, pinned staticcheck 2026.2.1, and pinned govulncheck v1.7.0; the credential-free host replay suite (`go test -tags=replay ./tests/replay`) runs with the unit checks.
 - [ ] In the host-architecture Docker E2E job, build the image, run runtime verification, supply a generated non-empty test token, and execute keyless/mock E2E without agent credentials. Do not print the token or use the insecure-remote override.
-- [ ] Gate the non-publishing `linux/amd64,linux/arm64` build/OCI inspection job with `if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`. It must not run for `pull_request`; manual execution occurs only through `workflow_dispatch`. Keep authenticated real-agent prompt/resume as a separate deferred gate until isolated CI credentials exist.
+- [ ] Gate the non-publishing `linux/amd64,linux/arm64` build/OCI inspection job with `if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`. It must not run for `pull_request`; manual execution occurs only through `workflow_dispatch`. Keep live authenticated real-agent prompt/resume as a separate deferred gate until isolated CI credentials exist; recorded-transcript replay (Tasks 6.13-6.14) already covers those flows credential-free in CI.
 - [ ] Remove nondeterministic build inputs such as unpinned base tags, semver ranges, generated lock drift, timestamps embedded by custom scripts, or architecture-hardcoded copies.
 - [ ] Confirm repeated builds use the same base digests, npm lock integrity, Go module sums, and target-specific binary path. Byte-identical whole-image IDs are not required because OCI metadata may vary; dependency identity is required.
 - [ ] Execute the final command set and retain CI logs as release evidence.
@@ -459,8 +459,11 @@ grep -q 'OpenCode 1.18.18' README.md
 ```sh
 test -z "$(gofmt -l cmd internal tests)"
 go vet ./...
+go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...
+go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
 go test ./... -count=1
 go test -race ./... -count=1
+go test -tags=replay ./tests/replay -count=1 -v
 CGO_ENABLED=0 go build -trimpath -o /tmp/agent-bridge ./cmd/agent-bridge
 docker buildx build --no-cache --load --platform "linux/$(go env GOARCH)" -f docker/runtime/Dockerfile -t agent-bridge:release-check .
 scripts/verify-agents.sh --image agent-bridge:release-check
@@ -472,6 +475,100 @@ tar -tf /tmp/agent-bridge.oci
 tar -xOf /tmp/agent-bridge.oci index.json
 git diff --check
 ```
+
+### Task 6.12: Capture Real-Agent ACP Transcripts
+
+**Description:** Record dual-side ACP JSONL transcripts (client-to-agent and agent-to-client) from each pinned real agent — Claude, Codex, and OpenCode — using a deterministic Go stdio client, sanitize credentials, and commit the fixtures that Tasks 6.13-6.14 replay in CI. Recording runs once on a credentialed developer machine; CI never records and never needs credentials. The private `mock` agent is never recorded because it is test-only. A Go command (not a Node script) keeps the whole validation toolchain in one language, is testable under this repo's TDD conventions, and mirrors the `acpruntime` JSON-RPC framing semantics it records.
+
+**Files:** `cmd/capture-acp-traces/main.go` (build tag `capture`), `cmd/capture-acp-traces/capture_test.go`, `testdata/agents/README.md`, `testdata/agents/{claude,codex,opencode}/manifest.json`, `testdata/agents/{claude,codex,opencode}/{initialize,session-new,prompt,permission,session-load,session-resume,unknown-session,close-exit}.jsonl`; extend `internal/projectdocs/projectdocs_test.go`.
+
+**Symbols:** `captureAgent`, `driveScenario`, `sanitizeLine`; flags `--agent`, `--all`, `--out`; manifest fields `{agent, package, version, capturedAt, outcomes:[{scenario, outcome}]}`.
+
+**References:** Master "Agent resolution"; Task 6.2 locked packages; Phase 01 `childenv` sanitation conventions.
+
+**Risk:** High. Fixtures are the compatibility contract; a mis-recorded transcript produces false green in every later suite.
+
+**Reversibility:** Fixtures are data; re-record after any pinned agent version change.
+
+**Dependencies:** Task 6.2 (npm-installed binaries). Node remains required on the recording machine only to install agents via `npm ci`; the recorder itself needs only the Go toolchain already present for this repo.
+
+**RED:**
+
+- [ ] Write table-driven `go test` assertions driving the recorder against a stub echo agent (a small test helper binary, `--agent echo`): transcript format is one object per line, `dir` exactly `C` or `A`, `C` payloads byte-identical to what the client sent, `A` payloads the agent's raw stdout lines, strict scenario ordering, and one manifest entry per scenario.
+- [ ] Assert sanitization removes every value under keys matching `token|key|secret|password|apiKey|api_key|auth` (case-insensitive, nested, both sides) before writing, and that the command exits non-zero if any such value survives.
+- [ ] Assert the command fails non-zero when a pinned binary is missing from `docker/runtime/node_modules/.bin`, when the agent exits unexpectedly, and when an agent stdout line is not one JSON object.
+- [ ] Retain these behavioral failures before the recorder is implemented; a missing package/symbol is setup evidence only.
+
+**GREEN:**
+
+- [ ] Implement with `os/exec`, `bufio`, and `encoding/json` only. Scenarios per agent: `initialize`, `session-new` (with cwd), `prompt` (text), `permission` (record the reverse-call and its client response if the agent emits one; otherwise record the observed outcome), `session-load`, `session-resume`, `unknown-session-error`, `close-exit`. Record whatever the agent emits — success or an ACP auth-required error envelope — and mark the outcome in the manifest; never fail recording on an auth-required envelope.
+- [ ] Compact every `C` payload to one line before sending so Task 6.13 replay comparison is exact; keep `A` payloads byte-identical to agent stdout after stripping only JSONL framing whitespace.
+- [ ] Record all eight scenarios for claude, codex, and opencode on a credentialed machine, run the sanitize self-check, and commit the fixtures and manifests. `testdata/agents/README.md` documents the recording command (`go run ./cmd/capture-acp-traces`), credential requirement, and the re-record policy (mandatory on any pinned version bump).
+- [ ] Extend the projectdocs checklist to assert the recorder package, fixture README, and per-agent manifests exist with the required scenario entries.
+
+**Verify:** `go vet -tags=capture ./cmd/capture-acp-traces && go test -tags=capture ./cmd/capture-acp-traces -count=1 && go run ./cmd/capture-acp-traces --all --out testdata/agents && git diff --check -- testdata/agents cmd/capture-acp-traces`
+
+### Task 6.13: Replay Captured Transcripts Through The Bridge
+
+**Description:** Host-level suite that launches the bridge against a test-only fixture agent subprocess and proves byte-exact passthrough, persistence, and SSE replay of the real-agent transcripts recorded in Task 6.12. No Docker, no credentials, runs in CI.
+
+**Files:** `tests/replay/fixtureagent/main.go` (build tag `replay`), `tests/replay/replay_test.go`, `tests/replay/harness_test.go`, `testdata/agents/synthetic/initialize.jsonl` (minimal RED fixture), `Makefile`.
+
+**Symbols:** fixture agent env `REPLAY_TRANSCRIPT`; `startBridge(t, agent, transcript)`, `TestReplayInitialize`, `TestReplaySessionNew`, `TestReplayPrompt`, `TestReplayPermission`, `TestReplayLoadResume`, `TestReplayUnknownSession`; Makefile target `replay`.
+
+**References:** Master "ACP HTTP contract" and "ACP lifecycle and persistence"; Phase 02 `Runtime.Post`; Task 6.12 fixtures.
+
+**Risk:** High. Replay is the credential-free validation of the project's core real-agent compatibility requirement.
+
+**Reversibility:** Test-only files; fixtures are re-recorded in Task 6.12.
+
+**Dependencies:** Task 6.12 fixtures; completed Phases 01-03; Phase 01 `AGENT_BRIDGE_{CLAUDE,CODEX,OPENCODE}_BIN` overrides.
+
+**RED:**
+
+- [ ] Build the fixture agent: read the transcript, assert each incoming stdin line equals `json.Compact(C)` of the next `C` record, emit the matching `A` record's raw payload bytes to stdout, and exit non-zero on mismatch or EOF. Build tag `replay` keeps it out of the image and out of plain `go build ./...`.
+- [ ] Start the bridge binary on a free port with the fixture agent as `AGENT_BRIDGE_CLAUDE_BIN` (repeat per agent) and replay the recorded `C` sequence over HTTP against the synthetic fixture; retain failing assertions for exact response bytes, notification 202s, and fixture-observed input compaction.
+- [ ] Assert the recorded `A` sequence replays over SSE and `/v1/acp/{id}/events` byte-exactly: no re-marshal, no compaction, no reordering, every sequence id present.
+- [ ] Assert `session-new`/`session-load`/`session-resume` scenarios persist the recorded `sessionId` and cwd; an `unknown-session` error envelope passes through as an HTTP 200 JSON-RPC error; an auth-required envelope in a keyless recording also passes as 200.
+- [ ] **RED evidence:** Run the replay suite against the synthetic fixture and retain the behavioral failures listed above before the harness is complete.
+
+**GREEN:**
+
+- [ ] Implement the harness (stdlib only): build `cmd/agent-bridge` once per run; `REPLAY_TRANSCRIPT` is inherited because it does not collide with the four sanitized `AGENT_BRIDGE_*` variables; drive the real recorded fixtures for claude, codex, and opencode as table subtests.
+- [ ] Assert session/SSE byte fidelity against the fixture as the source of truth; do not weaken assertions when a recording contains an auth-required envelope — the envelope bytes themselves are the expected result.
+- [ ] Add a `replay` target to the Makefile: `go test -tags=replay ./tests/replay -count=1`.
+- [ ] **GREEN evidence:** Run the full replay suite and record all per-agent subtests passing with the committed fixtures.
+
+**Verify:** `go build -tags=replay ./tests/replay/fixtureagent && go test -tags=replay ./tests/replay -count=1 -v`
+
+### Task 6.14: Mock-Agent Conformance Against Recorded Transcripts
+
+**Description:** Drive `internal/mockagent` with every recorded `C` sequence and assert structural conformance with the recorded `A` side within documented per-agent allowances, so the Phase 02/03 protocol tests exercise real agent semantics instead of invented ones.
+
+**Files:** `tests/replay/conformance_test.go`, per-agent `manifest.json` `allowances` field.
+
+**Symbols:** `TestMockConformance`, `driveMock`, `assertConformant`; manifest field `allowances`.
+
+**References:** Phase 02 `internal/mockagent`; Task 6.12 fixtures.
+
+**Risk:** Medium. Conformance is structural, not byte-exact; excessive allowances would silently hide mock drift.
+
+**Reversibility:** Easy to revert; allowances are data.
+
+**Dependencies:** Task 6.12 fixtures; completed Phase 02 mock.
+
+**RED:**
+
+- [ ] Run the conformance driver against the synthetic fixture first; retain failures for mismatched envelope order, id correlation, method names, and `sessionId` presence before any allowance is applied.
+- [ ] Assert the driver fails when a mock envelope has no corresponding recorded envelope, and when an allowance names a scenario/agent pair that has no fixture.
+
+**GREEN:**
+
+- [ ] Implement structural comparison over the three envelope kinds: request/response/notification order, id correlation, method names, `sessionId` presence, and `result`/`error` presence. Initialize capability content (`agentCapabilities`, `authMethods`, `agentInfo`, `protocolVersion`) is compared by key set only, because agents legitimately differ.
+- [ ] Document allowances in each manifest, limited to observed agent behavior: e.g. OpenCode 1.18.18 may omit `sessionId` on `session/load`; keyless Claude/Codex `session-new` may record an auth-required error while the mock returns success. No allowance may weaken correlation or envelope-order assertions.
+- [ ] Require all three manifests to pass with their recorded allowances; a new recorded scenario without a conformance allowance fails the suite.
+
+**Verify:** `go test -tags=replay ./tests/replay -run TestMockConformance -count=1`
 
 ## Dependencies
 
@@ -488,6 +585,9 @@ git diff --check
 | 6.9 | 6.1-6.8, Phases 01-05 |
 | 6.10 | 6.1-6.9 |
 | 6.11 | 6.1-6.10 |
+| 6.12 | 6.2, npm registry availability, host Node >= 20 |
+| 6.13 | 6.1, 6.12, Phases 01-03 |
+| 6.14 | 6.12, Phase 02 |
 
 Phase 06 is the final sequential phase and begins only after Phases 01-05 are integrated. Each task remains independently verifiable with its listed command.
 
@@ -502,6 +602,9 @@ Phase 06 is the final sequential phase and begins only after Phases 01-05 are in
 - Persistence/restart, idle reaper, process-group, and graceful shutdown E2E coverage.
 - Cross-cutting hardening checks and public `README.md`.
 - CI workflow with read-only formatting, unit/vet/race/static checks and authenticated host-architecture Docker E2E on pull requests/pushes to `main`, plus non-publishing multi-architecture verification on pushes to `main`, weekly schedule, and manual dispatch.
+- `cmd/capture-acp-traces` (build tag `capture`) and committed dual-side ACP transcripts for all three supported agents (claude, codex, opencode), sanitized, with per-agent manifests documenting outcomes and allowances.
+- Host-level replay suite proving byte-exact real-agent passthrough, persistence, and SSE replay without Docker or credentials.
+- Mock conformance suite tying Phase 02/03 protocol tests to recorded real-agent behavior.
 - Multi-architecture release verification evidence without publishing an image.
 
 ## Completion Criteria
@@ -512,6 +615,9 @@ Phase 06 is the final sequential phase and begins only after Phases 01-05 are in
 - [ ] `verify-agents.sh` proves runtime-visible versions, expected commands/default OpenCode ACP invocation, user/permissions/environment, and entrypoint; the builder/host tooling gate separately proves target architecture and static bridge linkage.
 - [ ] Strict mock E2E passes every required ACP correlation, persistence, SSE, deletion, timeout, invalid-output, and redaction assertion.
 - [ ] Keyless Claude, Codex, and OpenCode outcomes match only the explicitly allowed matrix.
+- [ ] Transcripts exist for all eight scenarios per supported agent, sanitized, with manifests documenting outcomes and allowances; the capture tool self-check rejects surviving credential-shaped values.
+- [ ] The replay suite passes byte-exact response/SSE/event assertions for every recorded transcript without Docker or credentials; the fixture agent never appears in the image or non-tagged builds.
+- [ ] Mock conformance passes for all three agents with only documented allowances; no allowance weakens correlation or envelope ordering.
 - [ ] State survives restart; stale live state becomes exited without signaling persisted PIDs; initialize plus explicit load/resume restores use.
 - [ ] Idle reap, DELETE, stop, kill, and shutdown terminate full process groups; pinned PID 1 reaps orphaned descendants without zombies while the container remains running; clean shutdown exits 0 within one 10-second budget and removes the PID file last.
 - [ ] The image and E2E require a token for the `0.0.0.0` bind; empty-token non-loopback startup fails unless the explicit unsafe override is `1`.
@@ -522,4 +628,4 @@ Phase 06 is the final sequential phase and begins only after Phases 01-05 are in
 
 ## Open Questions
 
-- Authenticated real-agent prompt and resume E2E remains intentionally deferred until CI supplies isolated test credentials; keyless and strict private-mock coverage are the release gate for this phase.
+- Live authenticated prompt/resume E2E remains deferred until CI supplies isolated test credentials. Recorded transcripts (Task 6.12) provide credential-free byte-exact replay (Task 6.13) and mock conformance (Task 6.14) for the deferred flows; re-record on a credentialed machine is mandatory whenever a pinned agent version changes.
