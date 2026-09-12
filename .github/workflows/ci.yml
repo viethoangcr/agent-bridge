@@ -101,14 +101,31 @@ jobs:
           tar -xOf /tmp/agent-bridge.oci index.json > /tmp/agent-bridge-index.json
           python3 - <<'PY'
           import json
+          import tarfile
 
-          with open("/tmp/agent-bridge-index.json") as f:
-              index = json.load(f)
-          arches = {
-              m["platform"]["architecture"]
-              for m in index.get("manifests", [])
-              if m.get("platform")
-          }
+          def load(tar, name):
+              member = tar.extractfile(name)
+              if member is None:
+                  raise KeyError(name)
+              return json.load(member)
+
+          def collect(tar, node, arches):
+              for manifest in node.get("manifests", []):
+                  platform = manifest.get("platform") or {}
+                  if platform.get("architecture"):
+                      arches.add(platform["architecture"])
+                      continue
+                  digest = manifest.get("digest", "")
+                  if ":" in digest:
+                      algorithm, value = digest.split(":", 1)
+                      try:
+                          collect(tar, load(tar, f"blobs/{algorithm}/{value}"), arches)
+                      except KeyError:
+                          pass
+
+          with tarfile.open("/tmp/agent-bridge.oci") as tar:
+              arches = set()
+              collect(tar, load(tar, "index.json"), arches)
           missing = {"amd64", "arm64"} - arches
           if missing:
               raise SystemExit(
