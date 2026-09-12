@@ -451,20 +451,20 @@ grep -q 'OpenCode 1.18.18' README.md
 
 **RED:**
 
-- [ ] Add workflow contract assertions that fail until CI contains a read-only formatting gate, unit/vet/race/static checks, token-authenticated keyless host-architecture Docker E2E, and a non-publishing amd64/arm64 build/inspection job. Assert exact `pull_request`, `push` to `main`, weekly `schedule`, and `workflow_dispatch` triggers; exact job conditions below; and a full 40-character hexadecimal SHA after `@` for every non-local `uses:` reference. A missing workflow is setup evidence only; retain the failing required-job assertions.
-- [ ] Run a no-cache host architecture build and compare package/binary verification against the cached build.
-- [ ] Run a two-platform build to a local OCI archive or registry-backed test tag and verify both manifest entries and target ELF architectures.
-- [ ] Run all checks from a clean worktree snapshot/context and capture any undeclared generated-file or network-at-runtime dependency.
+- [x] Add workflow contract assertions that fail until CI contains a read-only formatting gate, unit/vet/race/static checks, token-authenticated keyless host-architecture Docker E2E, and a non-publishing amd64/arm64 build/inspection job. Assert exact `pull_request`, `push` to `main`, weekly `schedule`, and `workflow_dispatch` triggers; exact job conditions below; and a full 40-character hexadecimal SHA after `@` for every non-local `uses:` reference. A missing workflow is setup evidence only; retain the failing required-job assertions.
+- [x] Run a no-cache host architecture build and compare package/binary verification against the cached build.
+- [x] Run a two-platform build to a local OCI archive or registry-backed test tag and verify both manifest entries and target ELF architectures.
+- [x] Run all checks from a clean worktree snapshot/context and capture any undeclared generated-file or network-at-runtime dependency.
 
 **GREEN:**
 
-- [ ] Create `.github/workflows/ci.yml` with least-privilege read permissions and only these triggers: `pull_request`; `push` with `branches: [main]`; one weekly `schedule`; and `workflow_dispatch`. Pin every non-local action, including GitHub-owned and Docker actions, as `owner/repository@<full-40-character-commit-SHA>`; tags, branches, abbreviated SHAs, and floating major versions are forbidden.
-- [ ] Gate formatting/unit/vet/race/static jobs and the token-authenticated keyless host-architecture Docker E2E job with `if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')`. Start verification with `test "$(go env GOVERSION)" = go1.26.8`. Formatting must only detect drift with `test -z "$(gofmt -l cmd internal tests)"` or an equivalent non-writing check; verification must never run `gofmt -w`. Static checks include the `CGO_ENABLED=0` build, host/tooling-stage ELF inspection, pinned staticcheck 2026.2.1, and pinned govulncheck v1.7.0, all run with `-tags=e2e` so the tag-gated package is analyzed instead of being silently skipped by `./...`.
-- [ ] In the host-architecture Docker E2E job, build the image, run runtime verification, supply a generated non-empty test token, and execute keyless/mock E2E without agent credentials. Do not print the token or use the insecure-remote override.
-- [ ] Gate the non-publishing `linux/amd64,linux/arm64` build/OCI inspection job with `if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`. It must not run for `pull_request`; manual execution occurs only through `workflow_dispatch`. Keep live authenticated real-agent prompt/resume deferred until isolated CI credentials exist.
-- [ ] Remove nondeterministic build inputs such as unpinned base tags, semver ranges, generated lock drift, timestamps embedded by custom scripts, or architecture-hardcoded copies.
-- [ ] Confirm repeated builds use the same base digests, npm lock integrity, Go module sums, and target-specific binary path. Byte-identical whole-image IDs are not required because OCI metadata may vary; dependency identity is required.
-- [ ] Execute the final command set and retain CI logs as release evidence.
+- [x] Create `.github/workflows/ci.yml` with least-privilege read permissions and only these triggers: `pull_request`; `push` with `branches: [main]`; one weekly `schedule`; and `workflow_dispatch`. Pin every non-local action, including GitHub-owned and Docker actions, as `owner/repository@<full-40-character-commit-SHA>`; tags, branches, abbreviated SHAs, and floating major versions are forbidden.
+- [x] Gate formatting/unit/vet/race/static jobs and the token-authenticated keyless host-architecture Docker E2E job with `if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')`. Start verification with `test "$(go env GOVERSION)" = go1.26.8`. Formatting must only detect drift with `test -z "$(gofmt -l cmd internal tests)"` or an equivalent non-writing check; verification must never run `gofmt -w`. Static checks include the `CGO_ENABLED=0` build, host/tooling-stage ELF inspection, pinned staticcheck 2026.2.1, and pinned govulncheck v1.7.0, all run with `-tags=e2e` so the tag-gated package is analyzed instead of being silently skipped by `./...`.
+- [x] In the host-architecture Docker E2E job, build the image, run runtime verification, supply a generated non-empty test token, and execute keyless/mock E2E without agent credentials. Do not print the token or use the insecure-remote override.
+- [x] Gate the non-publishing `linux/amd64,linux/arm64` build/OCI inspection job with `if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`. It must not run for `pull_request`; manual execution occurs only through `workflow_dispatch`. Keep live authenticated real-agent prompt/resume deferred until isolated CI credentials exist.
+- [x] Remove nondeterministic build inputs such as unpinned base tags, semver ranges, generated lock drift, timestamps embedded by custom scripts, or architecture-hardcoded copies.
+- [x] Confirm repeated builds use the same base digests, npm lock integrity, Go module sums, and target-specific binary path. Byte-identical whole-image IDs are not required because OCI metadata may vary; dependency identity is required.
+- [x] Execute the final command set and retain CI logs as release evidence.
 
 **Verify:**
 
@@ -521,20 +521,20 @@ Phase 06 is the final sequential phase and begins only after Phases 01-05 are in
 
 ## Completion Criteria
 
-- [ ] No Docker base tag is unpinned and no npm dependency uses a range.
-- [ ] `npm ci` from the committed lock installs all optional dependencies and runs required lifecycle scripts.
-- [ ] The final image runs as UID/GID 10001 under checksum-pinned Tini 0.19.0 PID 1, has writable HOME, immutable agent files, and contains no build toolchain or ELF inspection tooling.
-- [ ] `verify-agents.sh` proves runtime-visible versions, expected commands/default OpenCode ACP invocation, user/permissions/environment, and entrypoint; the builder/host tooling gate separately proves target architecture and static bridge linkage.
-- [ ] The focused raw-byte mock fixture passes required ACP correlation, persistence, SSE, deletion, timeout, invalid-output, and redaction assertions without creating a transcript/replay subsystem.
-- [ ] Keyless Claude, Codex, and OpenCode outcomes match only the explicitly allowed matrix.
-- [ ] State survives restart; stale live state becomes exited without signaling persisted PIDs; initialize plus explicit load/resume restores use.
-- [ ] Idle reap, DELETE, stop, kill, shutdown, and every ACP/managed/one-shot direct-child exit terminate full process groups before pumps/status/capacity release; pinned PID 1 reaps orphaned descendants without zombies while the container remains running; clean shutdown exits 0 within one 10-second budget and removes the PID file last.
-- [ ] The image and E2E require a token for the `0.0.0.0` bind; empty-token non-loopback startup fails unless the explicit unsafe override is `1`.
-- [ ] Auth, handler-level RFC 9457 errors, limits, logging redaction, race tests, static build, and all prior phase tests pass; transport parser/header errors are not claimed as problem JSON.
-- [ ] README matches shipped public behavior and contains no private mock documentation.
+- [x] No Docker base tag is unpinned and no npm dependency uses a range.
+- [x] `npm ci` from the committed lock installs all optional dependencies and runs required lifecycle scripts.
+- [x] The final image runs as UID/GID 10001 under checksum-pinned Tini 0.19.0 PID 1, has writable HOME, immutable agent files, and contains no build toolchain or ELF inspection tooling.
+- [x] `verify-agents.sh` proves runtime-visible versions, expected commands/default OpenCode ACP invocation, user/permissions/environment, and entrypoint; the builder/host tooling gate separately proves target architecture and static bridge linkage.
+- [x] The focused raw-byte mock fixture passes required ACP correlation, persistence, SSE, deletion, timeout, invalid-output, and redaction assertions without creating a transcript/replay subsystem.
+- [x] Keyless Claude, Codex, and OpenCode outcomes match only the explicitly allowed matrix.
+- [x] State survives restart; stale live state becomes exited without signaling persisted PIDs; initialize plus explicit load/resume restores use.
+- [x] Idle reap, DELETE, stop, kill, shutdown, and every ACP/managed/one-shot direct-child exit terminate full process groups before pumps/status/capacity release; pinned PID 1 reaps orphaned descendants without zombies while the container remains running; clean shutdown exits 0 within one 10-second budget and removes the PID file last.
+- [x] The image and E2E require a token for the `0.0.0.0` bind; empty-token non-loopback startup fails unless the explicit unsafe override is `1`.
+- [x] Auth, handler-level RFC 9457 errors, limits, logging redaction, race tests, static build, and all prior phase tests pass; transport parser/header errors are not claimed as problem JSON.
+- [x] README matches shipped public behavior and contains no private mock documentation.
 - [ ] Both `linux/amd64` and `linux/arm64` images build and contain the correct target binary.
-- [ ] Every Go file in `tests/e2e` carries the `e2e` build tag; plain `go test ./...` and tagged vet/static checks both remain valid.
-- [ ] `.github/workflows/ci.yml` uses only full 40-character SHA action pins, detects formatting drift without writing files, runs unit/vet/race/static and token-authenticated keyless host-architecture Docker E2E only on pull requests and pushes to `main`, and runs non-publishing multiarch verification only on pushes to `main`, weekly schedule, and `workflow_dispatch`.
+- [x] Every Go file in `tests/e2e` carries the `e2e` build tag; plain `go test ./...` and tagged vet/static checks both remain valid.
+- [x] `.github/workflows/ci.yml` uses only full 40-character SHA action pins, detects formatting drift without writing files, runs unit/vet/race/static and token-authenticated keyless host-architecture Docker E2E only on pull requests and pushes to `main`, and runs non-publishing multiarch verification only on pushes to `main`, weekly schedule, and `workflow_dispatch`.
 
 ## Open Questions
 

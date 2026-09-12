@@ -3,10 +3,12 @@
 package projectdocs
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -513,4 +515,191 @@ func TestRuntimeDockerfileContract(t *testing.T) {
 	for _, problem := range runtimeDockerfileProblems([]byte(dockerfile)) {
 		t.Error(problem)
 	}
+}
+
+// ciTrunkGate and ciReleaseGate are the exact job conditions Phase 06 Task 6.11
+// requires. The trunk gate runs checks and host-architecture Docker E2E only on
+// pull requests and pushes to main; the release gate runs the non-publishing
+// multiarch build on pushes to main, the weekly schedule, and manual dispatch,
+// and never on pull requests.
+const (
+	ciTrunkGate   = "if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')"
+	ciReleaseGate = "if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'"
+)
+
+// ciPinnedAction matches a non-local action reference pinned to a full
+// 40-character lowercase hexadecimal commit SHA, optionally followed by a
+// trailing comment naming the human-readable tag.
+var ciPinnedAction = regexp.MustCompile(`^[^\s@]+@[0-9a-f]{40}(\s*#.*)?$`)
+
+// ciWorkflowProblems reports every CI workflow contract violation so one run
+// lists all gaps. The workflow must own fast checks and both Docker gates with
+// exact triggers, least-privilege read permissions, full-SHA action pins, and
+// read-only formatting drift detection.
+func ciWorkflowProblems(body []byte) []string {
+	var problems []string
+	add := func(format string, args ...any) {
+		problems = append(problems, fmt.Sprintf(format, args...))
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		return []string{"ci.yml is empty"}
+	}
+	workflow := string(body)
+
+	for _, fragment := range []string{
+		"on:",
+		"pull_request:",
+		"push:",
+		"branches: [main]",
+		"schedule:",
+		"cron:",
+		"workflow_dispatch:",
+		"permissions:",
+		"contents: read",
+		"runs-on:",
+	} {
+		if !strings.Contains(workflow, fragment) {
+			add("ci.yml is missing required content %q", fragment)
+		}
+	}
+	if strings.Contains(workflow, "contents: write") || strings.Contains(workflow, "write-all") {
+		add("ci.yml must use least-privilege read permissions")
+	}
+
+	if got := strings.Count(workflow, ciTrunkGate); got != 2 {
+		add("ci.yml trunk-gated job condition appears %d times, want 2 (checks and docker-e2e): %q", got, ciTrunkGate)
+	}
+	if got := strings.Count(workflow, ciReleaseGate); got != 1 {
+		add("ci.yml release-gated job condition appears %d times, want 1 (multiarch): %q", got, ciReleaseGate)
+	}
+
+	for _, fragment := range []string{
+		`test "$(go env GOVERSION)" = go1.26.8`,
+		`test -z "$(gofmt -l cmd internal tests)"`,
+		"go vet -tags=e2e ./...",
+		"staticcheck@2026.2.1 -tags=e2e ./...",
+		"govulncheck@v1.7.0 -tags=e2e ./...",
+		"go test ./... -count=1",
+		"go test -race -skip 'TestRealHeartbeat15Seconds' ./... -count=1",
+		"CGO_ENABLED=0 go build -trimpath",
+		"GOOS=linux GOARCH=arm64 go build -trimpath",
+		"readelf -h",
+		"AArch64",
+	} {
+		if !strings.Contains(workflow, fragment) {
+			add("ci.yml is missing required content %q", fragment)
+		}
+	}
+	if strings.Contains(workflow, "gofmt -w") {
+		add("ci.yml must detect formatting drift without writing files")
+	}
+
+	for _, fragment := range []string{
+		"actions/checkout@",
+		"actions/setup-go@",
+		"docker/setup-buildx-action@",
+		"scripts/verify-agents.sh --image",
+		"go test -tags=e2e ./tests/e2e",
+		"AGENT_BRIDGE_TOKEN",
+		"::add-mask::",
+	} {
+		if !strings.Contains(workflow, fragment) {
+			add("ci.yml is missing required content %q", fragment)
+		}
+	}
+	for _, forbidden := range []string{
+		"AGENT_BRIDGE_ALLOW_INSECURE_REMOTE",
+		"set -x",
+	} {
+		if strings.Contains(workflow, forbidden) {
+			add("ci.yml must not contain %q", forbidden)
+		}
+	}
+
+	for _, fragment := range []string{
+		"docker/setup-qemu-action@",
+		"--platform linux/amd64,linux/arm64",
+		"--output type=oci",
+		`tar -xOf /tmp/agent-bridge.oci index.json`,
+		`"architecture":"amd64"`,
+		`"architecture":"arm64"`,
+	} {
+		if !strings.Contains(workflow, fragment) {
+			add("ci.yml is missing required multiarch content %q", fragment)
+		}
+	}
+	for _, forbidden := range []string{"--push", "docker/login-action", "docker buildx imagetools create"} {
+		if strings.Contains(workflow, forbidden) {
+			add("ci.yml multiarch job must not publish: found %q", forbidden)
+		}
+	}
+
+	// Every non-local `uses:` reference must be pinned to a full 40-character
+	// hexadecimal commit SHA. Tags, branches, and abbreviations are rejected.
+	for _, line := range strings.Split(workflow, "\n") {
+		trimmed := strings.TrimPrefix(strings.TrimSpace(line), "- ")
+		if !strings.HasPrefix(trimmed, "uses:") {
+			continue
+		}
+		ref := strings.TrimSpace(strings.TrimPrefix(trimmed, "uses:"))
+		if strings.HasPrefix(ref, "./") || strings.HasPrefix(ref, "docker://") {
+			continue
+		}
+		if !ciPinnedAction.MatchString(ref) {
+			add("ci.yml action %q is not pinned to a full 40-character SHA", ref)
+		}
+	}
+	return problems
+}
+
+// TestCIWorkflowContract locks the Phase 06 Task 6.11 CI contract: exact
+// triggers, least-privilege permissions, exact job gating, read-only formatting
+// drift detection, pinned checks and Docker gates, and full-SHA action pins.
+func TestCIWorkflowContract(t *testing.T) {
+	workflow, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatalf("read .github/workflows/ci.yml: %v", err)
+	}
+	for _, problem := range ciWorkflowProblems(workflow) {
+		t.Error(problem)
+	}
+}
+
+// TestCIWorkflowContractRejectsWrongFixture proves the contract checker reports
+// violations instead of silently accepting a wrong workflow.
+func TestCIWorkflowContractRejectsWrongFixture(t *testing.T) {
+	fixture := strings.Join([]string{
+		"name: ci",
+		"on:",
+		"  pull_request:",
+		"permissions: write-all",
+		"jobs:",
+		"  checks:",
+		"    runs-on: ubuntu-latest",
+		"    steps:",
+		"      - uses: actions/checkout@v4",
+		"      - run: gofmt -w cmd internal tests",
+		"      - run: go run honnef.co/go/tools/cmd/staticcheck@latest ./...",
+		"      - run: docker buildx build --platform linux/amd64,linux/arm64 --push -f docker/runtime/Dockerfile .",
+	}, "\n")
+
+	report := strings.Join(ciWorkflowProblems([]byte(fixture)), "\n")
+	if report == "" {
+		t.Fatal("deliberately wrong workflow unexpectedly satisfied the CI workflow contract")
+	}
+	for _, want := range []string{
+		`ci.yml is missing required content "schedule:"`,
+		"ci.yml must use least-privilege read permissions",
+		"ci.yml trunk-gated job condition appears 0 times, want 2",
+		"ci.yml release-gated job condition appears 0 times, want 1",
+		"ci.yml must detect formatting drift without writing files",
+		"ci.yml is missing required multiarch content",
+		"ci.yml multiarch job must not publish",
+		`ci.yml action "actions/checkout@v4" is not pinned to a full 40-character SHA`,
+	} {
+		if !strings.Contains(report, want) {
+			t.Errorf("fixture report is missing %q\n%s", want, report)
+		}
+	}
+	t.Logf("fixture problems detected:\n%s", report)
 }
