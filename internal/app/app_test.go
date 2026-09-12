@@ -2,20 +2,42 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/viethoangcr/agent-bridge/internal/acpruntime"
+	"github.com/viethoangcr/agent-bridge/internal/acpstore"
+	"github.com/viethoangcr/agent-bridge/internal/config"
+	"github.com/viethoangcr/agent-bridge/internal/lifecycle"
+	"github.com/viethoangcr/agent-bridge/internal/mockagent"
 )
+
+// TestMain lets this test binary double as the private mock agent when the ACP
+// resolver re-execs it with AGENT_BRIDGE_INTERNAL_MOCK_AGENT=1.
+func TestMain(m *testing.M) {
+	if os.Getenv("AGENT_BRIDGE_INTERNAL_MOCK_AGENT") == "1" {
+		if err := mockagent.Run(context.Background(), os.Stdin, os.Stdout, os.Stderr); err != nil {
+			fmt.Fprintln(os.Stderr, "mock agent:", err)
+			os.Exit(2)
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
 
 func testGetenv(vars map[string]string) func(string) string {
 	return func(key string) string { return vars[key] }
@@ -229,4 +251,355 @@ func (s *fakeShutdowner) Close() error {
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewJSONHandler(io.Discard, nil))
+}
+
+// fakeACPLifecycle records the ACP staged-shutdown calls without spawning any
+// process so app ordering can be asserted deterministically.
+type fakeACPLifecycle struct {
+	rec           *eventRecorder
+	started       atomic.Bool
+	shutdownCalls atomic.Int32
+	confirmCalls  atomic.Int32
+	onShutdown    func(context.Context) error
+	onConfirm     func(context.Context) error
+}
+
+func (f *fakeACPLifecycle) StartReaper() { f.started.Store(true) }
+
+func (f *fakeACPLifecycle) Shutdown(ctx context.Context) error {
+	f.shutdownCalls.Add(1)
+	if f.rec != nil {
+		f.rec.add("acp-pre")
+	}
+	if f.onShutdown != nil {
+		return f.onShutdown(ctx)
+	}
+	return nil
+}
+
+func (f *fakeACPLifecycle) Confirm(ctx context.Context) error {
+	f.confirmCalls.Add(1)
+	if f.rec != nil {
+		f.rec.add("acp-confirm")
+	}
+	if f.onConfirm != nil {
+		return f.onConfirm(ctx)
+	}
+	return nil
+}
+
+func (f *fakeACPLifecycle) Post(context.Context, string, *string, string, json.RawMessage) (acpruntime.PostResult, error) {
+	return acpruntime.PostResult{}, nil
+}
+
+func (f *fakeACPLifecycle) LivePID(string) (int, bool) { return 0, false }
+
+// TestACPRegistryOrder proves app.Run constructs and starts the ACP proxy and
+// runs its pre-drain hook before its post-drain confirmation. The store is
+// checkpoint-closed only after confirmation, which the reopen verifies.
+func TestACPRegistryOrder(t *testing.T) {
+	restore := setShutdownGrace(t, 2*time.Second)
+	defer restore()
+
+	addr := freeAddress(t)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split address: %v", err)
+	}
+	dbPath := filepath.Join(t.TempDir(), "bridge.db")
+	getenv := testGetenv(map[string]string{
+		"AGENT_BRIDGE_HOST": host,
+		"AGENT_BRIDGE_PORT": port,
+		"AGENT_BRIDGE_DB":   dbPath,
+	})
+
+	rec := &eventRecorder{}
+	proxy := &fakeACPLifecycle{rec: rec}
+	oldNew := newACPProxy
+	newACPProxy = func(*acpstore.Store, config.Config, *slog.Logger) acpService { return proxy }
+	t.Cleanup(func() { newACPProxy = oldNew })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	runErr := make(chan error, 1)
+	go func() { runErr <- Run(ctx, getenv, testIO()) }()
+	waitForHealth(t, "http://"+addr+"/v1/health")
+	cancel()
+	select {
+	case err := <-runErr:
+		if err != nil {
+			t.Fatalf("Run() = %v, want nil after cancellation", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after cancellation")
+	}
+
+	if !proxy.started.Load() {
+		t.Fatal("Run did not start the ACP reaper")
+	}
+	if got := proxy.shutdownCalls.Load(); got != 1 {
+		t.Fatalf("pre-drain Shutdown calls = %d, want 1", got)
+	}
+	if got := proxy.confirmCalls.Load(); got != 1 {
+		t.Fatalf("post-drain Confirm calls = %d, want 1", got)
+	}
+	got := rec.snapshot()
+	preIdx := slices.Index(got, "acp-pre")
+	confirmIdx := slices.Index(got, "acp-confirm")
+	if preIdx < 0 || confirmIdx < 0 || preIdx > confirmIdx {
+		t.Fatalf("ACP stage order = %v, want pre-drain before post-drain confirm", got)
+	}
+
+	reopened, err := acpstore.Open(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("reopen store after shutdown: %v", err)
+	}
+	_ = reopened.Close(context.Background())
+}
+
+// TestACPPreDrainOrder proves the pre-drain hook signal-and-waits the runtimes
+// before http.Server.Shutdown begins draining, and that post-drain confirmation
+// runs before the database close, all under one absolute deadline.
+func TestACPPreDrainOrder(t *testing.T) {
+	restore := setShutdownGrace(t, 2*time.Second)
+	defer restore()
+
+	var mu sync.Mutex
+	var deadlines []time.Time
+	record := func(ctx context.Context) {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Error("stage context has no deadline")
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		deadlines = append(deadlines, deadline)
+	}
+
+	rec := &eventRecorder{}
+	var killed atomic.Bool
+	proxy := &fakeACPLifecycle{rec: rec}
+	proxy.onShutdown = func(ctx context.Context) error {
+		record(ctx)
+		killed.Store(true)
+		return nil
+	}
+	proxy.onConfirm = func(ctx context.Context) error {
+		record(ctx)
+		return nil
+	}
+
+	pre := &lifecycle.Registry{}
+	post := &lifecycle.Registry{}
+	if err := registerShutdown(pre, post, func(ctx context.Context) error {
+		record(ctx)
+		rec.add("database")
+		return nil
+	}, proxy); err != nil {
+		t.Fatalf("registerShutdown: %v", err)
+	}
+
+	listener := &fakeCloser{rec: rec}
+	server := &fakeShutdowner{
+		rec:          rec,
+		onShutdown:   record,
+		streamClosed: killed.Load,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	drain(ctx, listener, server, pre, post, discardLogger(), "")
+
+	want := []string{"listener", "acp-pre", "shutdown", "acp-confirm", "database"}
+	if got := rec.snapshot(); !slices.Equal(got, want) {
+		t.Fatalf("stage order = %v, want %v", got, want)
+	}
+	if !killed.Load() {
+		t.Fatal("pre-drain hook did not finish killing before http shutdown")
+	}
+	if len(deadlines) != 4 {
+		t.Fatalf("recorded %d stage deadlines, want 4", len(deadlines))
+	}
+	for i, d := range deadlines {
+		if !d.Equal(deadlines[0]) {
+			t.Fatalf("stage %d deadline = %v, want shared absolute deadline %v", i, d, deadlines[0])
+		}
+	}
+}
+
+// TestServeErrorRunsACPLifecycle proves an unexpected Serve failure still runs
+// the pre-drain ACP shutdown (stop reaper, close subscriptions, signal-and-wait
+// runtimes) before the post-drain confirmation and database close, all under
+// one absolute deadline, so live runtimes never outlive the store.
+func TestServeErrorRunsACPLifecycle(t *testing.T) {
+	restore := setShutdownGrace(t, 2*time.Second)
+	defer restore()
+
+	rec := &eventRecorder{}
+	proxy := &fakeACPLifecycle{rec: rec}
+	var deadlines []time.Time
+	recordDeadline := func(stage string) func(context.Context) error {
+		return func(ctx context.Context) error {
+			deadline, ok := ctx.Deadline()
+			if !ok {
+				t.Errorf("%s context has no deadline", stage)
+				return nil
+			}
+			deadlines = append(deadlines, deadline)
+			return nil
+		}
+	}
+	proxy.onShutdown = recordDeadline("pre-drain")
+	proxy.onConfirm = recordDeadline("post-drain")
+
+	pre := &lifecycle.Registry{}
+	post := &lifecycle.Registry{}
+	if err := registerShutdown(pre, post, func(context.Context) error {
+		rec.add("database")
+		return nil
+	}, proxy); err != nil {
+		t.Fatalf("registerShutdown: %v", err)
+	}
+
+	listener := &failingListener{rec: rec, err: errors.New("accept boom")}
+	pidPath := filepath.Join(t.TempDir(), "bridge.pid")
+	if err := os.WriteFile(pidPath, []byte("123\n"), 0o600); err != nil {
+		t.Fatalf("seed pid file: %v", err)
+	}
+
+	err := serve(context.Background(), listener, &http.Server{Handler: http.NotFoundHandler()},
+		pre, post, discardLogger(), pidPath)
+	if err == nil {
+		t.Fatal("serve() = nil, want the accept failure surfaced")
+	}
+
+	want := []string{"listener", "acp-pre", "acp-confirm", "database"}
+	if got := rec.snapshot(); !slices.Equal(got, want) {
+		t.Fatalf("cleanup order = %v, want %v", got, want)
+	}
+	if got := proxy.shutdownCalls.Load(); got != 1 {
+		t.Fatalf("pre-drain Shutdown calls = %d, want 1", got)
+	}
+	if got := proxy.confirmCalls.Load(); got != 1 {
+		t.Fatalf("post-drain Confirm calls = %d, want 1", got)
+	}
+	if len(deadlines) != 2 {
+		t.Fatalf("recorded %d stage deadlines, want 2", len(deadlines))
+	}
+	if !deadlines[0].Equal(deadlines[1]) {
+		t.Fatalf("stage deadlines differ: pre %v, post %v", deadlines[0], deadlines[1])
+	}
+	if _, statErr := os.Stat(pidPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("pid file still present after serve error: stat error = %v", statErr)
+	}
+}
+
+// TestACPShutdown proves pre-drain signal-and-wait kill unblocks a long-lived
+// ACP request before HTTP drain, and that an expired drain budget still runs
+// the force-close fallback and post-drain cleanup.
+func TestACPShutdown(t *testing.T) {
+	t.Run("pre-drain-kills-blocked-runtime-before-http-drain", func(t *testing.T) {
+		restore := setShutdownGrace(t, 5*time.Second)
+		defer restore()
+
+		addr := freeAddress(t)
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			t.Fatalf("split address: %v", err)
+		}
+		dir := t.TempDir()
+		dbPath := filepath.Join(dir, "bridge.db")
+		pidPath := filepath.Join(dir, "bridge.pid")
+		getenv := testGetenv(map[string]string{
+			"AGENT_BRIDGE_HOST":        host,
+			"AGENT_BRIDGE_PORT":        port,
+			"AGENT_BRIDGE_DB":          dbPath,
+			"AGENT_BRIDGE_PID_FILE":    pidPath,
+			"AGENT_BRIDGE_IDLE_TTL_MS": "0",
+		})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		runErr := make(chan error, 1)
+		go func() { runErr <- Run(ctx, getenv, testIO()) }()
+		waitForHealth(t, "http://"+addr+"/v1/health")
+
+		blocked := make(chan struct{}, 1)
+		go func() {
+			body := strings.NewReader(`{"jsonrpc":"2.0","id":"hold","method":"_mock/delay","params":{"ms":60000}}`)
+			req, err := http.NewRequest(http.MethodPost, "http://"+addr+"/v1/acp/shutdown?agent=mock", body)
+			if err != nil {
+				blocked <- struct{}{}
+				return
+			}
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := http.DefaultClient.Do(req)
+			if err == nil {
+				_ = resp.Body.Close()
+			}
+			blocked <- struct{}{}
+		}()
+		time.Sleep(200 * time.Millisecond)
+
+		start := time.Now()
+		cancel()
+		select {
+		case err := <-runErr:
+			if err != nil {
+				t.Fatalf("Run() = %v, want nil", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("Run did not return within the shutdown budget")
+		}
+		if elapsed := time.Since(start); elapsed >= 4*time.Second {
+			t.Fatalf("shutdown took %s; pre-drain did not kill the blocked runtime before HTTP drain", elapsed)
+		}
+		select {
+		case <-blocked:
+		case <-time.After(2 * time.Second):
+			t.Fatal("blocked ACP request did not release after shutdown")
+		}
+		if _, err := os.Stat(pidPath); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("pid file not removed last: %v", err)
+		}
+		reopened, err := acpstore.Open(context.Background(), dbPath)
+		if err != nil {
+			t.Fatalf("reopen store after shutdown: %v", err)
+		}
+		server, err := reopened.Server(context.Background(), "shutdown")
+		if err != nil {
+			t.Fatalf("Server(shutdown): %v", err)
+		}
+		if server.Status != acpstore.StatusExited {
+			t.Errorf("status = %q, want exited", server.Status)
+		}
+		_ = reopened.Close(context.Background())
+	})
+
+	t.Run("budget-expiry-close-fallback-runs-post-drain", func(t *testing.T) {
+		restore := setShutdownGrace(t, 30*time.Millisecond)
+		defer restore()
+
+		rec := &eventRecorder{}
+		listener := &fakeCloser{rec: rec}
+		server := &fakeShutdowner{rec: rec, block: true}
+		post := &lifecycle.Registry{}
+		if err := post.Add("database", func(context.Context) error {
+			rec.add("post")
+			return nil
+		}); err != nil {
+			t.Fatalf("add post hook: %v", err)
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		drain(ctx, listener, server, &lifecycle.Registry{}, post, discardLogger(), "")
+
+		if !server.closeCalled.Load() {
+			t.Fatal("http Close was not called after budget expiry")
+		}
+		want := []string{"listener", "shutdown", "close", "post"}
+		if got := rec.snapshot(); !slices.Equal(got, want) {
+			t.Fatalf("stage order = %v, want %v", got, want)
+		}
+	})
 }

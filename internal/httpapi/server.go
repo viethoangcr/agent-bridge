@@ -6,6 +6,8 @@ import (
 	"path"
 	"slices"
 	"strings"
+
+	"github.com/viethoangcr/agent-bridge/internal/acpstore"
 )
 
 // rootDocsURL is the stable documentation location served by the root endpoint
@@ -19,22 +21,33 @@ const fallbackPattern = "/"
 // Phase 06 owns the final shape once all services exist; NewServer must not
 // construct stores, runtimes, reapers, or other services.
 type Dependencies struct {
-	Token string
-	Log   *slog.Logger
+	Token    string
+	Log      *slog.Logger
+	ACP      ACPProxy
+	ACPStore *acpstore.Store
 }
 
 // Server owns the Phase 01 route table and the composed HTTP handler. It is
 // assembled only through NewServer so every route shares one middleware chain.
 type Server struct {
 	mux     *http.ServeMux
+	deps    Dependencies
 	handler http.Handler
+
+	// newHeartbeatTicker builds the SSE keep-alive source. Tests replace it
+	// with a fake ticker so no unit test waits for the 15-second interval.
+	newHeartbeatTicker func() heartbeatTicker
 }
 
 // NewServer builds the route table and composes the middleware chain once, so
 // repeatedly returned handlers are the same instance. An empty deps.Token
 // leaves /v1/* unauthenticated.
 func NewServer(deps Dependencies) *Server {
-	s := &Server{mux: http.NewServeMux()}
+	s := &Server{
+		mux:                http.NewServeMux(),
+		deps:               deps,
+		newHeartbeatTicker: newHeartbeatTicker,
+	}
 	s.registerRoutes()
 	s.handler = requestLogger(deps.Log, authenticate(deps.Token, s.rejectUncleanPath(s.mux)))
 	return s
@@ -52,6 +65,7 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /{$}", s.root)
 	s.mux.HandleFunc("GET /v1/health", s.health)
+	s.registerACPRoutes()
 	s.mux.HandleFunc(fallbackPattern, s.routeFallback)
 }
 

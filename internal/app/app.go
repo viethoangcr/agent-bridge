@@ -5,6 +5,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,15 +13,69 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"strconv"
 	"time"
 
+	"github.com/viethoangcr/agent-bridge/internal/acpproxy"
+	"github.com/viethoangcr/agent-bridge/internal/acpruntime"
 	"github.com/viethoangcr/agent-bridge/internal/acpstore"
 	"github.com/viethoangcr/agent-bridge/internal/config"
 	"github.com/viethoangcr/agent-bridge/internal/httpapi"
 	"github.com/viethoangcr/agent-bridge/internal/lifecycle"
 	"github.com/viethoangcr/agent-bridge/internal/mockagent"
 )
+
+// acpLifecycle is the ACP proxy's staged-shutdown surface: the pre-drain hook
+// terminates runtimes immediately, and the post-drain hook idempotently
+// confirms completion before the store is checkpointed and closed.
+type acpLifecycle interface {
+	StartReaper()
+	Shutdown(context.Context) error
+	Confirm(context.Context) error
+}
+
+// acpService is the composed ACP proxy surface: staged shutdown plus the HTTP
+// dispatch methods the server consumes. The concrete *acpproxy.Proxy also
+// satisfies the SSE and DELETE consumer interfaces at runtime.
+type acpService interface {
+	acpLifecycle
+	Post(ctx context.Context, serverID string, agent *string, method string, payload json.RawMessage) (acpruntime.PostResult, error)
+	LivePID(serverID string) (int, bool)
+}
+
+// newACPProxy constructs the ACP lifecycle owner. It is a package variable so
+// tests can inject a deterministic lifecycle owner without spawning processes.
+var newACPProxy = func(store *acpstore.Store, cfg config.Config, logger *slog.Logger) acpService {
+	executable, err := os.Executable()
+	if err != nil {
+		executable = ""
+	}
+	return acpproxy.New(store, acpruntime.Resolver{
+		Executable: executable,
+		Commands:   cfg.Agents,
+		Environ:    os.Environ(),
+		LookPath:   exec.LookPath,
+	}, cfg.ACPRequestTimeout, cfg.IdleTTL, logger)
+}
+
+// registerShutdown wires the staged shutdown: the pre-drain hook stops the
+// reaper, closes subscriptions, blocks new leases, and signal-and-waits every
+// runtime so long-lived handlers cannot stall HTTP drain. The post-drain hooks
+// idempotently confirm runtime completion (registered last, so it runs before
+// the run-reverse-order database close) and then checkpoint-close the store.
+func registerShutdown(pre, post *lifecycle.Registry, closeDB lifecycle.Cleanup, proxy acpLifecycle) error {
+	if err := post.Add("database", closeDB); err != nil {
+		return err
+	}
+	if err := pre.Add("acp-pre-drain", proxy.Shutdown); err != nil {
+		return err
+	}
+	if err := post.Add("acp-confirm", proxy.Confirm); err != nil {
+		return err
+	}
+	return nil
+}
 
 // IO is the process input/output surface supplied by the command entrypoint.
 // Tests inject buffers so the application never writes to the real process
@@ -91,7 +146,15 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error {
 		}
 	}
 
-	handler := httpapi.NewServer(httpapi.Dependencies{Token: cfg.Token, Log: logger}).Handler()
+	proxy := newACPProxy(store, cfg, logger)
+	proxy.StartReaper()
+
+	handler := httpapi.NewServer(httpapi.Dependencies{
+		Token:    cfg.Token,
+		Log:      logger,
+		ACP:      proxy,
+		ACPStore: store,
+	}).Handler()
 	srv := &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: readHeaderTimeout,
@@ -100,10 +163,10 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error {
 
 	pre := &lifecycle.Registry{}
 	post := &lifecycle.Registry{}
-	if err := post.Add("database", store.Close); err != nil {
+	if err := registerShutdown(pre, post, store.Close, proxy); err != nil {
 		_ = listener.Close()
 		closeStore(ctx, logger, store)
-		return fmt.Errorf("registering database cleanup: %w", err)
+		return fmt.Errorf("registering shutdown hooks: %w", err)
 	}
 
 	if err := serve(ctx, listener, srv, pre, post, logger, cfg.PIDFile); err != nil {
@@ -128,10 +191,11 @@ func runInternalMockAgent(ctx context.Context, io IO) error {
 }
 
 // serve runs the HTTP server until ctx is canceled or Serve fails for a reason
-// other than the expected shutdown close. Cancellation runs the staged drain,
-// and an unexpected Serve failure runs the same post-drain cleanup, in both
-// cases always closing the store before removing the PID file. It returns nil
-// after bounded best effort; only an unexpected Serve failure is surfaced.
+// other than the expected shutdown close. Every exit runs the pre-drain ACP
+// shutdown (stop reaper, close subscriptions, signal-and-wait runtimes) and
+// then the shared post-drain cleanup under one absolute deadline, always
+// closing the store before removing the PID file. It returns nil after bounded
+// best effort; only an unexpected Serve failure is surfaced.
 func serve(ctx context.Context, ln net.Listener, srv *http.Server, pre, post *lifecycle.Registry, logger *slog.Logger, pidFile string) error {
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.Serve(ln) }()
@@ -139,7 +203,10 @@ func serve(ctx context.Context, ln net.Listener, srv *http.Server, pre, post *li
 	select {
 	case err := <-serveErr:
 		_ = ln.Close()
-		closePostAndRemovePID(context.WithoutCancel(ctx), post, logger, time.Now().Add(shutdownGrace), pidFile)
+		parent := context.WithoutCancel(ctx)
+		deadline := time.Now().Add(shutdownGrace)
+		shutdownPre(parent, deadline, pre, logger)
+		closePostAndRemovePID(parent, post, logger, deadline, pidFile)
 		if err != nil && !isNormalClose(err) {
 			return fmt.Errorf("http server: %w", err)
 		}
@@ -165,6 +232,19 @@ func closePostAndRemovePID(parent context.Context, post *lifecycle.Registry, log
 	removePIDFileLogged(logger, pidFile)
 }
 
+// shutdownPre runs the pre-drain stage under the shared absolute deadline on
+// every server-exit path: it closes subscriptions, stops the reaper, and
+// signal-and-waits every runtime so live processes never outlive the store.
+// The deadline is never reset; failures are logged and never surfaced.
+func shutdownPre(parent context.Context, deadline time.Time, pre *lifecycle.Registry, logger *slog.Logger) {
+	preCtx, cancelPre := context.WithDeadline(parent, deadline)
+	preErr := pre.Shutdown(preCtx)
+	cancelPre()
+	if preErr != nil {
+		logger.Error("pre-drain cleanup", "error", preErr)
+	}
+}
+
 // drain performs the cancellation-driven staged shutdown against one absolute
 // deadline. The run ctx is already canceled, so every stage is derived from a
 // non-canceled parent carrying that same deadline; each stage gets a fresh
@@ -181,12 +261,7 @@ func drain(ctx context.Context, ln io.Closer, srv httpShutdowner, pre, post *lif
 	}
 
 	// 2. Pre-drain: close streams, stop reapers, signal and wait processes.
-	preCtx, cancelPre := context.WithDeadline(parent, deadline)
-	preErr := pre.Shutdown(preCtx)
-	cancelPre()
-	if preErr != nil {
-		logger.Error("pre-drain cleanup", "error", preErr)
-	}
+	shutdownPre(parent, deadline, pre, logger)
 
 	// 3. Drain now-unblocked handlers. If the absolute budget expires while
 	// Shutdown is still draining, force-close remaining connections.
