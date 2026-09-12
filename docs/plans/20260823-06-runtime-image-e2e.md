@@ -234,17 +234,17 @@ scripts/verify-agents.sh --image agent-bridge:e2e
 
 **RED:**
 
-- [ ] Run a minimal script seam against fixtures/mutated image layers with one missing command, one mismatched package version, a root user, writable dependencies, and a wrong PID-1 entrypoint; each behavioral assertion must fail non-zero with the offending component named. A missing script is setup evidence only.
-- [ ] Separately feed a dynamically linked or wrong-architecture fake bridge to the `binary-verify` stage/host inspection and retain that behavioral failure.
+- [x] Run a minimal script seam against fixtures/mutated image layers with one missing command, one mismatched package version, a root user, writable dependencies, and a wrong PID-1 entrypoint; each behavioral assertion must fail non-zero with the offending component named. A missing script is setup evidence only.
+- [x] Separately feed a dynamically linked or wrong-architecture fake bridge to the `binary-verify` stage/host inspection and retain that behavioral failure.
 
 **GREEN:**
 
-- [ ] Use `set -eu`, `command -v`, and Node to read installed package JSON exactly; do not parse human-oriented npm output.
-- [ ] Check agent versions equal 0.68.0, 1.3.0, and 1.18.18, resolved commands remain below `/opt/agents/node_modules/.bin`, and `/usr/bin/tini --version` reports 0.19.0; the Docker build's SHA-256 check owns binary identity.
-- [ ] Use bounded non-interactive version/help invocations. Probe `opencode acp` with an explicit timeout, terminate and reap it on timeout/success, and reject browser-launch output; no verification command may leave the bridge or an agent server running.
-- [ ] With runtime tools, verify `agent-bridge` is executable; do not invoke `file`, `readelf`, `ldd`, or assume those tools exist in the final image. Let the already-required tooling stage/host inspection own architecture and static-link assertions.
-- [ ] For `--image`, inspect/run the image and fail if UID is 0, HOME is wrong, `/opt/agents` is writable, required environment is absent, or the entrypoint is not pinned `tini -- agent-bridge`.
-- [ ] Run the local verification in the Docker build so a broken package layout cannot produce the final stage.
+- [x] Use `set -eu`, `command -v`, and Node to read installed package JSON exactly; do not parse human-oriented npm output.
+- [x] Check agent versions equal 0.68.0, 1.3.0, and 1.18.18, resolved commands remain below `/opt/agents/node_modules/.bin`, and `/usr/bin/tini --version` reports 0.19.0; the Docker build's SHA-256 check owns binary identity.
+- [x] Use bounded non-interactive version/help invocations. Probe `opencode acp` with an explicit timeout, terminate and reap it on timeout/success, and reject browser-launch output; no verification command may leave the bridge or an agent server running.
+- [x] With runtime tools, verify `agent-bridge` is executable; do not invoke `file`, `readelf`, `ldd`, or assume those tools exist in the final image. Let the already-required tooling stage/host inspection own architecture and static-link assertions.
+- [x] For `--image`, inspect/run the image and fail if UID is 0, HOME is wrong, `/opt/agents` is writable, required environment is absent, or the entrypoint is not pinned `tini -- agent-bridge`.
+- [x] Run the local verification in the Docker build so a broken package layout cannot produce the final stage.
 
 **Verify:** `scripts/verify-agents.sh --image agent-bridge:e2e`
 

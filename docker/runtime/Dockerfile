@@ -112,16 +112,22 @@ RUN set -eux; \
 COPY --from=agent-deps --chown=root:root /opt/agents /opt/agents
 COPY --from=binary-verify /out/agent-bridge /usr/local/bin/agent-bridge
 COPY --from=tini /usr/bin/tini /usr/bin/tini
+COPY scripts/verify-agents.sh /usr/local/bin/verify-agents.sh
 
 RUN set -eux; \
-    chmod 0755 /usr/local/bin/agent-bridge /usr/bin/tini; \
-    chown -R root:root /opt/agents /usr/local/bin/agent-bridge /usr/bin/tini
+    chmod 0755 /usr/local/bin/agent-bridge /usr/bin/tini /usr/local/bin/verify-agents.sh; \
+    chown -R root:root /opt/agents /usr/local/bin/agent-bridge /usr/bin/tini /usr/local/bin/verify-agents.sh
 
 ENV HOME=/home/agentbridge \
     PATH=/opt/agents/node_modules/.bin:$PATH \
     AGENT_BRIDGE_HOST=0.0.0.0 \
     DISABLE_AUTOUPDATER=1 \
     NO_BROWSER=1
+
+# Fail the build if the installed agents, commands, Tini, environment, or
+# permissions violate the runtime contract. The script stays in the final
+# image so `verify-agents.sh --image` can rerun it as the runtime user.
+RUN /usr/local/bin/verify-agents.sh
 
 EXPOSE 2468
 
