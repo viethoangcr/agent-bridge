@@ -291,18 +291,18 @@ scripts/verify-agents.sh --image agent-bridge:e2e
 
 **RED:**
 
-- [ ] Create table subtests for `claude`, `codex`, and `opencode`; each must first complete ACP `initialize` and persist its response/event.
-- [ ] For Claude/Codex, send `session/new` with a container-writable cwd and accept success or a valid ACP auth-required error envelope; then send one prompt for each and accept success or a structural `-32000` auth-required envelope (Claude keyless `session/new` normally succeeds and its auth error surfaces at `session/prompt`). Reject crashes, HTTP problems, hangs, and unrelated errors.
-- [ ] For OpenCode, require `session/new` success and a non-empty session ID, then send one prompt and accept success or ACP auth failure while requiring the process to remain supervised.
-- [ ] If session load is exercised, tolerate OpenCode's omitted `sessionId` only in the 1.18.18 response while requiring bridge session state to retain the requested ID.
-- [ ] Assert no host credential paths, API-key environment variables, or browser processes are present in the container.
-- [ ] Run the matrix and record failures before image/runtime corrections.
+- [x] Create table subtests for `claude`, `codex`, and `opencode`; each must first complete ACP `initialize` and persist its response/event.
+- [x] For Claude/Codex, send `session/new` with a container-writable cwd and accept success or a valid ACP auth-required error envelope; then send one prompt for each and accept success or a structural `-32000` auth-required envelope (Claude keyless `session/new` normally succeeds and its auth error surfaces at `session/prompt`). Reject crashes, HTTP problems, hangs, and unrelated errors.
+- [x] For OpenCode, require `session/new` success and a non-empty session ID, then send one prompt and accept success or ACP auth failure while requiring the process to remain supervised.
+- [x] If session load is exercised, tolerate OpenCode's omitted `sessionId` only in the 1.18.18 response while requiring bridge session state to retain the requested ID.
+- [x] Assert no host credential paths, API-key environment variables, or browser processes are present in the container.
+- [x] Run the matrix and record failures before image/runtime corrections.
 
 **GREEN:**
 
-- [ ] Correct image PATH, HOME, package installation, default agent args, or process environment sanitization as indicated; do not add special success paths for E2E.
-- [ ] Bound each initialize/session operation independently so one agent hang identifies the exact binary.
-- [ ] Keep auth-error matching structural and assert the JSON-RPC code `-32000` explicitly; never use a broad substring that accepts arbitrary failures.
+- [x] Correct image PATH, HOME, package installation, default agent args, or process environment sanitization as indicated; do not add special success paths for E2E.
+- [x] Bound each initialize/session operation independently so one agent hang identifies the exact binary.
+- [x] Keep auth-error matching structural and assert the JSON-RPC code `-32000` explicitly; never use a broad substring that accepts arbitrary failures.
 
 **Verify:** `go test -tags=e2e ./tests/e2e -run TestDockerKeylessAgents -count=1 -v -timeout=10m`
 
