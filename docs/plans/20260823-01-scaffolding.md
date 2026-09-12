@@ -1,6 +1,7 @@
 # Plan: Phase 01 - Scaffolding and Server Foundation
 
 **Date:** 2026-08-23
+**Revised:** 2026-09-12
 **Status:** DRAFT
 **Risk Level:** Medium
 
@@ -19,7 +20,7 @@ Create the dependency-free Go 1.26 repository and production server foundation o
 - Phase 01 uses only the Go standard library. `modernc.org/sqlite` is deliberately added in Phase 02, not here.
 - `AGENT_BRIDGE_INTERNAL_MOCK_AGENT=1` selects an internal execution path before HTTP configuration, listener creation, or PID-file creation. Phase 01 establishes and tests this dispatch seam; Phase 02 replaces the temporary `internal mock agent is not implemented` result with the private JSONL loop.
 - Durations parsed from `*_MS` variables are base-10 integers interpreted as milliseconds. Parsing must reject values whose checked millisecond-to-`time.Duration` conversion would overflow. `AGENT_BRIDGE_ACP_REQUEST_TIMEOUT_MS` is in `1ms..1h`; `AGENT_BRIDGE_IDLE_TTL_MS` is in `0..30d`, where `0` disables reaping. Invalid or out-of-range values fail startup; no silent fallback is permitted. Phase 04 owns its process-specific timeout and byte-count bounds, but must use this phase's checked parsing conventions rather than unchecked multiplication.
-- `AGENT_BRIDGE_PORT` is an integer in `1..65535`. `AGENT_BRIDGE_LOG_LEVEL` accepts `debug`, `info`, `warn`, or `error` case-insensitively and stores the normalized lowercase value.
+- `AGENT_BRIDGE_PORT` is an integer in `1..65535`. `AGENT_BRIDGE_LOG_LEVEL` accepts `debug`, `info`, `warn`, or `error` case-insensitively and maps to the corresponding `slog.Level` value.
 - Remote unauthenticated listening is forbidden by default. Startup fails when `AGENT_BRIDGE_HOST` is not provably loopback and `AGENT_BRIDGE_TOKEN` is empty unless `AGENT_BRIDGE_ALLOW_INSECURE_REMOTE=1`. Loopback means an IP for which `net.IP.IsLoopback` is true or the exact case-insensitive hostname `localhost`; unknown hostnames are treated as remote. The override accepts only empty/`0` or `1`, is never inherited by children, and must be documented as unsafe.
 - PID-file content is the decimal PID followed by `\n`; creation uses mode `0600` and fails rather than replacing an existing file. Removal ignores only `os.ErrNotExist`.
 - Later phases register ACP, managed-process, and database cleanup functions in the same shutdown registry. This phase must not predeclare those implementations.
@@ -142,8 +143,8 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error
 
 - [ ] Add `cmd/agent-bridge/main_test.go` asserting the command package is buildable and that cancellation is translated to a clean return through an injected/context-driven app path once implemented.
 - [ ] Add the smallest compilable injected app-run seam, then **RED evidence:** run `go test ./cmd/agent-bridge` and retain the failing cancellation/exit assertion. Any earlier missing-`internal/app` compilation failure is setup evidence only.
-- [ ] Create `go.mod` with `go 1.26.7` (exact latest patch) and a matching `toolchain go1.26.7` directive, the module path above, and no `require` entries; add a repository-root `.tool-versions` pinning `golang 1.26.7`; add `main.go` using `signal.NotifyContext` for `os.Interrupt` and `syscall.SIGTERM`, invoking `app.Run` once and exiting nonzero only for a returned startup/runtime error. Signal-triggered cleanup errors are logged by `app.Run` but return cleanly so signals exit 0. The patch is pinned deliberately because Go 1.26.1-1.26.7 carry security fixes; CI resolves the toolchain via `go-version-file: go.mod`. The `go` directive is a floor, not a selector, and toolchain switching never downgrades: Go 1.27 (released alongside 1.26.7) would silently change `encoding/json` internals, so `.tool-versions` + the README must document that local builds use exactly 1.26.7.
-- [ ] Add `Makefile` targets `test`, `lint`, `build`, `vuln`, and `check`; use `CGO_ENABLED=0 go build -trimpath -o bin/agent-bridge ./cmd/agent-bridge`, `go test ./...`, `go vet ./...`, and pinned dev-time tools invoked only through `go run ...@version` so no module dependency is added: `go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...` for `lint` and `go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...` for `vuln`. `check` starts with the exact-version guard `test "$$(go env GOVERSION)" = go1.26.7`, then composes `test`, `lint`, `build`, a `gofmt -l .` emptiness assertion, and a `go mod tidy` cleanliness assertion (`go mod tidy && git diff --exit-code -- go.mod go.sum`), without other external tools. Once the e2e suite exists (Phase 06), `lint` and `vuln` add `-tags=e2e`; every Go file in a tag-gated package, including tests, must carry that package tag so plain `go test ./...` remains valid.
+- [ ] Create `go.mod` with `go 1.26.8` (exact latest patch) and a matching `toolchain go1.26.8` directive, the module path above, and no `require` entries; add a repository-root `.tool-versions` pinning `golang 1.26.8`; add `main.go` using `signal.NotifyContext` for `os.Interrupt` and `syscall.SIGTERM`, invoking `app.Run` once and exiting nonzero only for a returned startup/runtime error. Signal-triggered cleanup errors are logged by `app.Run` but return cleanly so signals exit 0. The patch is pinned deliberately: Go 1.26.x carries security and stability fixes, while Go 1.27 backs `encoding/json` with the v2 implementation whose behavior is preserved but error text and edge cases can drift. CI resolves the toolchain via `go-version-file: go.mod`; the `go` directive is a floor, not a selector, and toolchain switching never downgrades, so `.tool-versions` + the README must document that local builds use exactly 1.26.8.
+- [ ] Add `Makefile` targets `test`, `lint`, `build`, `vuln`, and `check`; use `CGO_ENABLED=0 go build -trimpath -o bin/agent-bridge ./cmd/agent-bridge`, `go test ./...`, `go vet ./...`, and pinned dev-time tools invoked only through `go run ...@version` so no module dependency is added: `go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...` for `lint` and `go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...` for `vuln`. `check` starts with the exact-version guard `test "$$(go env GOVERSION)" = go1.26.8`, then composes `test`, `lint`, `build`, a `gofmt -l .` emptiness assertion, and a `go mod tidy` cleanliness assertion (`go mod tidy && git diff --exit-code -- go.mod go.sum`), without other external tools. Once the e2e suite exists (Phase 06), `lint` and `vuln` add `-tags=e2e`; every Go file in a tag-gated package, including tests, must carry that package tag so plain `go test ./...` remains valid.
 - [ ] **GREEN evidence:** Run `go test ./cmd/agent-bridge` and record `ok`; run `CGO_ENABLED=0 go build ./cmd/agent-bridge` and record exit status 0.
 
 **Verification:** `make check`
@@ -152,7 +153,7 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error
 
 **Reversibility:** Easy to revert; all files are new.
 
-**Deliverable:** A standard-library-only Go 1.26.7-pinned module with one command and deterministic hygiene/check/build commands.
+**Deliverable:** A standard-library-only Go 1.26.8-pinned module with one command and deterministic hygiene/check/build commands.
 
 ### Task 1.2: Parse and Validate Environment Configuration
 
@@ -166,7 +167,7 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error
 
 **Strict test-first steps:**
 
-- [ ] Write table-driven tests for empty-environment defaults: host `127.0.0.1`, port `2468`, level `info`, DB `./agent-bridge.db`, request timeout `120000ms`, idle TTL `900000ms`, empty token/PID file, disabled insecure-remote override, and the exact three default agent commands.
+- [ ] Write table-driven tests for empty-environment defaults: host `127.0.0.1`, port `2468`, level `info`, DB `./agent-bridge.db`, request timeout `600000ms`, idle TTL `900000ms`, empty token/PID file, disabled insecure-remote override, and the exact three default agent commands.
 - [ ] Add tests for every override, JSON argument arrays (including spaces and empty strings), defensive argument-slice ownership, idle TTL `0`, normalized log levels, loopback hosts without a token, and authenticated non-loopback hosts.
 - [ ] Add rejection tests for malformed/out-of-range ports; request timeout `0`, negative, over `1h`, non-integer, or conversion overflow; idle TTL negative, over `30d`, non-integer, or conversion overflow; unsupported log levels; non-array/non-string/malformed agent args; invalid insecure-remote flags; and empty-token non-loopback hosts without the override. Assert errors name the responsible variable without containing token values.
 - [ ] Add explicit safety tests that `0.0.0.0`, `::`, and unknown hostnames require a token, `127.0.0.1`, `::1`, and case-insensitive `localhost` do not, and only `AGENT_BRIDGE_ALLOW_INSECURE_REMOTE=1` permits the unsafe case.
@@ -273,12 +274,13 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error
 
 **Strict test-first steps:**
 
-- [ ] Add black-box table tests for `GET /`, `GET /v1/health`, an unknown path, and wrong methods on both known paths.
-- [ ] Assert exact success JSON shapes, root's public behavior with auth enabled, health's required auth, `Allow: GET` on 405, and RFC 9457 bodies/content types for 404/405.
+- [ ] Add black-box table tests for `GET /`, `GET /v1/health`, an unknown path, nested/unknown subpaths, and wrong methods on both known paths (`POST /`, `POST /v1/health`).
+- [ ] Assert exact success JSON shapes, root's public behavior with auth enabled, health's required auth, sorted `Allow: GET, HEAD` on 405, and RFC 9457 bodies/content types for 404/405.
 - [ ] Add path tests proving `/v1/health/extra` and `/unknown` are 404 rather than accidentally matched by a subtree handler.
+- [ ] Add a routing test proving wrong-method requests on every registered path (including `POST /`) return problem+json 405 with a deterministic `Allow` list, and unknown paths return problem+json 404 from the same fallback.
 - [ ] Test `NewServer(...).Handler()` as the only public HTTP assembly path and assert repeated `Handler` calls return the same composed handler.
 - [ ] Add the smallest compilable server returning an empty handler, then **RED evidence:** run `go test ./internal/httpapi -run TestServer` and retain failing route/auth/problem assertions. Missing-symbol failure is setup evidence only.
-- [ ] Register `GET /` and `GET /v1/health` method/path patterns on the server-owned mux. Register methodless known-path fallbacks for 405 and a final `/` fallback that returns 405 only for the exact root path and 404 otherwise. Compose `/v1/*` auth once without buffering responses, preserving future SSE compatibility.
+- [ ] Register `GET /{$}` and `GET /v1/health` method/path patterns on the server-owned mux. Register one final methodless `/` fallback that derives the allowed methods for the request path by probing `mux.Handler` with each candidate method on a cloned request, returns 405 with a sorted `Allow` header and a problem+json body when any method matches, and a problem+json 404 otherwise. Never register methodless same-path fallbacks: Go 1.22+ `ServeMux` panics when they conflict with the root pattern. Compose `/v1/*` auth once without buffering responses, preserving future SSE compatibility.
 - [ ] **GREEN evidence:** Re-run the focused test; record every status/content-type/Allow assertion passing.
 
 **Verification:** `go test ./internal/httpapi -run TestServer -count=1`
@@ -385,8 +387,8 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error
 
 - [ ] Add `internal/projectdocs/projectdocs_test.go` that reads repository-root `README.md`, `AGENTS.md`, and `Makefile`, asserting the documented build/test commands and required Go/static/no-extra-dependency rules exist. Use only standard-library testing.
 - [ ] Create minimal placeholder documents if absent, then **RED evidence:** run `go test ./internal/projectdocs` and retain failing assertions for missing required commands, environment safety, or repository rules. Missing files alone are setup evidence only.
-- [ ] Write a README skeleton with purpose, current phase status, prerequisites (exactly Go 1.26.7, enforced by `make check`), `make check`, `make build`, environment table, auth/root/health examples, the non-loopback token requirement and unsafe override warning, and a pointer to the authoritative specification. Do not advertise unfinished APIs or the private mock agent.
-- [ ] Write project `AGENTS.md` requiring master-contract precedence, numeric phase order, stdlib plus only `modernc.org/sqlite`, behavioral test-first evidence, injected clocks/limits, `CGO_ENABLED=0`, handler-level RFC 9457 errors, no public mock interface, no runtime installs, and no expansion into excluded features. Also require the pinned `go 1.26.7` toolchain, `gofmt`/`go mod tidy` cleanliness before every commit, and that `make lint` (staticcheck 2026.2.1) and `make vuln` (govulncheck v1.7.0) are green in CI, with dev-time tools run only through pinned `go run ...@version` so `go.mod`/`go.sum` stay dependency-free.
+- [ ] Write a README skeleton with purpose, current phase status, prerequisites (exactly Go 1.26.8, enforced by `make check`), `make check`, `make build`, environment table, auth/root/health examples, the non-loopback token requirement and unsafe override warning, and a pointer to the authoritative specification. Do not advertise unfinished APIs or the private mock agent.
+- [ ] Write project `AGENTS.md` requiring master-contract precedence, numeric phase order, stdlib plus only `modernc.org/sqlite`, behavioral test-first evidence, injected clocks/limits, `CGO_ENABLED=0`, handler-level RFC 9457 errors, no public mock interface, no runtime installs, and no expansion into excluded features. Also require the pinned `go 1.26.8` toolchain, `gofmt`/`go mod tidy` cleanliness before every commit, and that `make lint` (staticcheck 2026.2.1) and `make vuln` (govulncheck v1.7.0) are green in CI, with dev-time tools run only through pinned `go run ...@version` so `go.mod`/`go.sum` stay dependency-free.
 - [ ] **GREEN evidence:** Re-run the docs test and record `ok`.
 
 **Verification:** `go test ./internal/projectdocs -count=1 && make check`
@@ -414,7 +416,7 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error
 
 ## Phase Deliverables
 
-- An exactly Go 1.26.7 module with no external dependencies and a `CGO_ENABLED=0` build.
+- An exactly Go 1.26.8 module with no external dependencies and a `CGO_ENABLED=0` build.
 - A validated environment configuration contract ready for later phases.
 - Refusal to expose an unauthenticated non-loopback listener unless the explicit unsafe override is set.
 - A shared `internal/childenv.Sanitized` helper for ACP and managed process children.
@@ -429,7 +431,7 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error
 
 - [ ] Every task has retained RED output demonstrating a behavioral assertion failed against a minimal compilable seam; missing-file/missing-symbol output is not the sole RED evidence.
 - [ ] Every task has retained GREEN output demonstrating its focused verification passed after implementation.
-- [ ] `go mod edit -json` shows Go 1.26.7 and no `require` entries; `go.mod` carries `toolchain go1.26.7`, `.tool-versions` pins `golang 1.26.7`, `make check` rejects any other `go env GOVERSION`, and README requires exactly Go 1.26.7.
+- [ ] `go mod edit -json` shows Go 1.26.8 and no `require` entries; `go.mod` carries `toolchain go1.26.8`, `.tool-versions` pins `golang 1.26.8`, `make check` rejects any other `go env GOVERSION`, and README requires exactly Go 1.26.8.
 - [ ] `gofmt -l .` is empty and `go mod tidy` produces no `go.mod`/`go.sum` diff.
 - [ ] `go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...` reports no findings.
 - [ ] `go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...` reports no findings (network required; owned by CI).
@@ -447,7 +449,7 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error
 ## Final Verification Commands
 
 ```sh
-test "$(go env GOVERSION)" = go1.26.7
+test "$(go env GOVERSION)" = go1.26.8
 gofmt -l .
 go mod tidy && git diff --exit-code -- go.mod go.sum
 go vet ./...

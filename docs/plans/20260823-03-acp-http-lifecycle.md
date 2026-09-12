@@ -1,6 +1,7 @@
 # Plan: Phase 03 - ACP Proxy and HTTP Lifecycle
 
 **Date:** 2026-08-23
+**Revised:** 2026-09-12
 **Status:** DRAFT
 **Risk Level:** High
 
@@ -13,6 +14,7 @@ Build lifecycle ownership and HTTP transport over the Phase 02 ACP store/runtime
 ## References and Assumptions
 
 - `docs/plans/20260815-agent-bridge.md` is authoritative, especially the sections "Authentication and errors", "ACP HTTP contract", "ACP lifecycle and persistence", "ACP state endpoints and schema", and "Environment, shutdown, and image".
+- `docs/references/acp-v1-protocol.md`: normative ACP v1 field map and keyless/auth implications (§5, §9); all ACP claims must be checked against it.
 - Phase 01 plan: `docs/plans/20260823-01-scaffolding.md`. Extend `httpapi.Server` in `internal/httpapi/server.go`; reuse `Problem`, `WriteProblem`, `DecodeJSON`, authentication/logging, `config.Config`, and the lifecycle registry.
 - Phase 02 plan: `docs/plans/20260823-02-acp-persistence-runtime.md`. Consume `internal/acpstore`, `internal/acpruntime`, and `internal/mockagent` directly. Do not create an `internal/acp` package or duplicate their models.
 - Phase 01 already parses agent commands, ACP request timeout, and idle TTL. Phase 02 owns `acpruntime.Resolver`, launch resolution, sanitized agent environment through shared `internal/childenv`, and private mock execution.
@@ -208,11 +210,11 @@ flowchart LR
 - [ ] Test `Content-Type` requires `application/json` while allowing parameters/case; missing/wrong is 415. Test missing `Accept`, `application/json`, `application/*`, `*/*`, comma lists, and parameters; incompatible values are 406.
 - [ ] Test exact 10 MiB acceptance and over-limit 413; malformed/trailing JSON, batch/non-object, wrong/missing `jsonrpc`, `id:null`, invalid ID type, and invalid request/notification/response shape are 400. Raw string/numeric ID tokens over 128 bytes, numeric exponent magnitude over 1,000,000, session IDs over 1024 UTF-8 bytes, and lifecycle cwd over 4096 UTF-8 bytes are 400 before runtime creation/admission. Preserve and pass the original validated raw object to `Runtime.Post`; semantic/raw passthrough preserves envelope fields, exact decoded string IDs, numeric lexemes, and payload values, while the runtime alone owns later compaction.
 - [ ] Test valid request, notification, and client-response shapes. Validation may classify only enough to reject invalid HTTP input and identify initialize for lifecycle policy; it must not correlate IDs, sessions, or agent output.
-- [ ] Test first agent omission 400; unknown agent 400; invalid/over-limit ID or lifecycle metadata 400; later conflict 409; deleting/reinitialize conflict 409; duplicate ID, including a lifecycle ID retained during grace, maps 409; proxy live-runtime capacity and Phase 02 correlation capacity map 429; Phase 02 writer/request timeout maps 504; process/spawn/write/exit maps 502 with `Runtime.Stderr()` as already capped/redacted `agentStderr`; store failure maps 507.
+- [ ] Test first agent omission 400; unknown agent 400; invalid/over-limit ID or session metadata 400; later conflict 409; deleting/reinitialize/deleted conflict 409; proxy `ErrClosed` maps 503 while the bridge is shutting down; duplicate ID, including a lifecycle ID retained during grace, maps 409; proxy live-runtime capacity and Phase 02 correlation capacity map 429; Phase 02 writer/request timeout maps 504; process/spawn/write/exit maps 502 with `Runtime.Stderr()` as already capped/redacted `agentStderr` when a process was started (spawn/resolution failures omit it); store failure maps 507.
 - [ ] Test `acpruntime.PostResult.Response` carries exact agent-emitted normal and JSON-RPC error object bytes after JSONL framing removal as HTTP 200; the handler does not decode/re-marshal them. `PostResult.Accepted` produces 202 with no body.
 - [ ] **RED evidence:** With a compiling route stub, run `go test ./internal/httpapi -run TestACPPost`; retain behavioral failures for raw-object delegation, numeric bounds, 409/429/504 mapping, and exact response bytes rather than only missing-handler failure.
 - [ ] Extend `httpapi.Dependencies` with `ACP *acpproxy.Proxy` and `ACPStore *acpstore.Store`, retaining the Phase 01 `NewServer(deps) *Server` and `Server.Handler() http.Handler` assembly path. Register `POST /v1/acp/{serverId}` through that server and existing auth/logging/problem behavior.
-- [ ] Reuse `DecodeJSON` where it can preserve the original object `json.RawMessage`; otherwise add one ACP-specific bounded raw decoder in `acp.go`, not generic duplicate middleware. Validate without compacting/re-marshaling and pass the original raw object through proxy; `Runtime.Post` is the sole compaction owner.
+- [ ] Reuse `DecodeJSON` where it can preserve the original object `json.RawMessage`; otherwise add one ACP-specific bounded raw decoder in `acp.go`, not generic duplicate middleware. For envelope shape/limit validation call the exported `acpruntime.ClassifyClientEnvelope` from Phase 02 (single source of truth) before proxy creation; do not restate its rules in `httpapi`. Pass the original raw object through proxy; `Runtime.Post` is the sole compaction owner.
 - [ ] Map Phase 02/acpproxy typed errors only, including `ErrCapacity` to 429; do not reimplement correlation, timeout/grace timers, duplicate detection, stderr redaction, compaction, or response matching.
 - [ ] **GREEN evidence:** Re-run the focused handler table and record exact status/content-type/body results.
 
@@ -240,7 +242,7 @@ flowchart LR
 
 - [ ] Test `GET /v1/acp` returns all durable live/exited servers sorted by `serverId`, with exactly `serverId`, `agent`, `status`, `createdAtMs`, and `updatedAtMs`.
 - [ ] Test unknown status is 404; session IDs are sorted; `lastEventSeq` is the durable nonnegative `int64` value; PID appears only when `Proxy.LivePID` confirms the current generation and is otherwise omitted. DTO conversion writes `int64` directly to JSON numbers and never casts through `uint64`, `int`, or `float64`.
-- [ ] Test events defaults `after=0`, `limit=100`, `order=asc`; exclusive after; limit 1-1000; asc/desc; strict nonnegative decimal `int64` parsing through `math.MaxInt64`; reject signs, overflow, repeated/empty/unknown values; and raw payload embedding rather than JSON string quoting.
+- [ ] Test events defaults `after=0`, `limit=100`, `order=asc`; exclusive after; limit `1..1000` with `0` rejected as 400; asc/desc; strict nonnegative decimal `int64` parsing through `math.MaxInt64`; reject signs, overflow, repeated/empty/unknown values; and raw payload embedding rather than JSON string quoting.
 - [ ] Test session filtering, reject filter values over 1024 UTF-8 bytes with 400, and return unknown-session 404 with unknown server checked first.
 - [ ] **RED evidence:** With compiling handler stubs, run `go test ./internal/httpapi -run 'TestACP(List|Status|Events)'`; retain behavioral failures for `math.MaxInt64` boundaries, DTO precision, raw payload embedding, sorting, and filtering.
 - [ ] Register exact method/path patterns on `httpapi.Server`; call `acpstore.Servers`, `Server`, `Sessions`, and `Events` directly for durable data.
@@ -302,6 +304,7 @@ flowchart LR
 **Strict test-first steps:**
 
 - [ ] Use `internal/mockagent` as delivered by Phase 02; extend only its existing private test protocol when an assertion cannot be expressed, with its tests changed in the same RED/GREEN cycle. Do not create another mock package.
+- [ ] Post `session/prompt` and assert its response event carries the retained request `sessionId` and that `/events?sessionId=` returns it like the sibling `session/update` notifications; assert an over-limit `sessionId` on a session-scoped request is 400 before admission.
 - [ ] Test first initialize, successful bounded session roster/cwd persistence in the same output transaction, synchronous exact agent response bytes, runtime-compacted agent input from an unchanged HTTP raw object, notification/client-response bounded writer behavior, lexical equivalent numeric duplicate IDs, invalid/over-limit IDs/metadata, 64-live-runtime and 256-correlation capacity 429, timeout 504 with durable busy throughout grace/commit plus late session/SSE/event visibility, grace-expiry exit, invalid stdout, stderr-safe 502, exit/reinitialize, and sorted list/status/events.
 - [ ] Attribute protocol matching/session/persistence/busy-idle assertions to `acpruntime.Runtime.Post`/`acpstore`; assert `acpproxy` only owns instance lifecycle and routes coalesced commit wakeups into authoritative store queries.
 - [ ] Test SSE reconnect from an exact `int64` sequence and replay after bridge restart, including dropped/coalesced wakeups recovered by polling. Startup reconciliation marks stale live rows exited and never signals persisted PIDs.
@@ -342,7 +345,7 @@ flowchart LR
 - [ ] `go test -race ./internal/acpproxy ./internal/httpapi ./internal/integration ./internal/app -run 'TestACP|TestProxy|TestReaper|TestSubscription'` passes.
 - [ ] `go test ./...`, `go vet ./...`, and `CGO_ENABLED=0 go build -trimpath ./cmd/agent-bridge` pass.
 - [ ] No `internal/acp` package, resolver/config parser, JSONL parser, ID waiter map, session extractor, output persistence path, stderr redactor, or mock-agent duplicate exists in Phase 03.
-- [ ] Phase 03 passes the original validated raw object unchanged; only `Runtime.Post` compacts input. ID/session/cwd limits map to 400, retained duplicates to 409, live-runtime/correlation capacity to 429, and writer/request timeout to 504.
+- [ ] Phase 03 passes the original validated raw object unchanged; only `Runtime.Post` compacts input. ID/session/cwd limits map to 400, retained duplicates to 409, live-runtime/correlation capacity to 429, writer/request timeout to 504, and shutdown-window posts to 503.
 - [ ] All sequence DTOs and parsers use nonnegative `int64` through `math.MaxInt64`; no `uint64`, `float64`, or architecture-sized conversion can overflow or lose precision.
 - [ ] Manual inspection confirms subscriptions query committed `acpstore.Event` data after coalesced wakeups and fallback ticks, lifecycle termination targets only leased/current `acpruntime.Runtime` objects, and persisted PIDs are never signaled.
 - [ ] Public busy means any waiting, grace-retained, or committing correlation; notification/client-response forwarding and proxy leases do not affect status. Idle reaping cannot target grace/commit work.

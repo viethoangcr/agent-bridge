@@ -1,6 +1,7 @@
 # Plan: Phase 05 - Filesystem and Config APIs
 
 **Date:** 2026-08-23
+**Revised:** 2026-09-12
 **Status:** DRAFT
 **Risk Level:** High
 
@@ -46,7 +47,7 @@ Deliver all `/v1/fs/*` and `/v1/config/{mcp,skills}` routes with deterministic r
 - Config PUT accepts one JSON object. MCP values are `{command:string,args?:string[],env?:map[string]string}`; skills values may be any JSON object. Arrays, scalars, `null`, unknown MCP fields, empty MCP commands, and trailing JSON are 400.
 - Config writes use same-directory temporary files, mode 0600, `fsync`, atomic rename, and directory `fsync`. PUT and DELETE return 204 empty; missing GET and DELETE return 404.
 - All malformed inputs, missing query values, OS failures, and body-limit failures use the shared `application/problem+json` response path; payload excess is 413.
-- The master plan is authoritative for public HTTP strictness and exact schemas. JSON requests require a parsed `application/json` Content-Type (case-insensitive type/subtype, parameters allowed); missing/malformed/other types are 415. JSON DTOs reject unknown fields and trailing values. Scalar query keys are allowlisted, occur at most once, and reject unknown/repeated/empty required values with 400. Raw file PUT and tar.gz upload retain their master-defined non-JSON Content-Type behavior.
+- The master plan is authoritative for public HTTP strictness and exact schemas. JSON requests require a parsed `application/json` Content-Type (case-insensitive type/subtype, parameters allowed); missing/malformed/other types are 415. JSON DTOs reject unknown fields and trailing values. Scalar query keys are allowlisted, occur at most once, and reject unknown/repeated/empty required values with 400. Raw file PUT and tar.gz upload are body-oriented and accept any Content-Type (the master specification defines no media type for them).
 - One process-wide `sync.Mutex`, constructed in `internal/app`, serializes every bridge-originated filesystem mutation: file PUT, delete, mkdir, move, upload preflight/merge, and config PUT/DELETE. Reads need not take it. Threat model: authenticated clients can execute arbitrary commands, so pathname checks and this process-local lock cannot defend concurrent external OS mutation; the sandbox is the security boundary. Upload checks defend non-concurrent extraction mistakes, and all symlink/type rechecks immediately before mutation remain required.
 - For every RED section, first make the test compile when the symbol already exists, run it before implementation, and retain the failing behavioral assertion. A compile failure is acceptable evidence only for a genuinely new symbol and must be replaced by behavioral RED evidence once compilation is possible.
 
@@ -308,12 +309,12 @@ func (s *Server) handleSkillsConfig(w http.ResponseWriter, r *http.Request)
 - [ ] Test mkdir decodes exactly `{directory,name}`, is idempotent, and returns 200 `{"path":<resolved path>}`.
 - [ ] Test move decodes exactly `{source,destination}`, rejects empty/legacy/unknown fields, safely replaces only compatible destinations, preserves incompatible/non-empty destinations, and returns 200 `{"path":<resolved destination>}`.
 - [ ] Test upload accepts gzip data without requiring a Content-Type, returns `{"files":[...]}`, rejects compressed excess with 413, and maps unsafe archives to 400.
-- [ ] Test JSON handlers require `application/json` with optional parameters and reject missing/wrong Content-Type with 415; raw PUT/upload follow their exact non-JSON master contract. Test auth still applies to every new `/v1/*` route and wrong methods are shared problem+json 405 responses.
+- [ ] Test JSON handlers require `application/json` with optional parameters and reject missing/wrong Content-Type with 415; raw PUT/upload accept any Content-Type. Test auth still applies to every new `/v1/*` route; wrong methods return the shared problem+json 405 with sorted `Allow` produced by the Phase 01 `/` fallback (this phase registers no methodless same-path fallbacks).
 - [ ] Run `go test ./internal/httpapi -run 'TestFS'` and retain behavioral failures for strict query/schema/media-type handling where feasible.
 
 **GREEN:**
 
-- [ ] Register Go 1.26 patterns for the exact endpoints; use one method-switch handler only where GET and PUT share a path.
+- [ ] Register only method-specific Go 1.26 patterns for the exact endpoints; use one method-switch handler only where GET and PUT share a path. Wrong-method 405s come from the Phase 01 `/` fallback, never from methodless same-path registrations.
 - [ ] Require non-empty `directory`/`path` query values where specified; reject duplicate ambiguous values through the Phase 01 query helper.
 - [ ] Use `http.MaxBytesReader` with injected limits and max+1 detection for PUT and upload. Stream rather than calling `io.ReadAll` for production-sized bodies; keep one bounded production-boundary test and use small limits elsewhere.
 - [ ] Stream opened files with `io.Copy`; set `Content-Length` from descriptor metadata and `application/octet-stream`.
@@ -398,7 +399,7 @@ CGO_ENABLED=0 go build -trimpath -o /tmp/agent-bridge ./cmd/agent-bridge
 | 5.6 | 5.1 |
 | 5.7 | 5.5, 5.6, Phase 01 |
 
-Phase 05 may execute after Phase 01 in parallel with Phases 02-04. It must not depend on ACP or process internals.
+Phase 05's isolated package tasks (5.1-5.4 and 5.6) may execute after Phase 01 in parallel with Phases 02-04. Tasks 5.5 and 5.7 extend shared `httpapi`/`internal/app` files and require Phase 03 completion. The phase must not depend on ACP or process internals.
 
 ## Deliverables
 

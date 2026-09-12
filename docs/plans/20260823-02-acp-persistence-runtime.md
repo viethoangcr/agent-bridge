@@ -1,6 +1,7 @@
 # Plan: Phase 02 - ACP Persistence and Stdio Runtime
 
 **Date:** 2026-08-23
+**Revised:** 2026-09-12
 **Status:** DRAFT
 **Risk Level:** High
 
@@ -15,11 +16,11 @@ Add the durable SQLite state layer and complete private stdio ACP subprocess run
 - `docs/plans/20260815-agent-bridge.md` remains authoritative. This plan depends on the completed Phase 01 repository/config/lifecycle foundation and does not redefine the HTTP contract.
 - Apply the master specification sections **Platform and dependencies**, **Authentication and errors**, **ACP HTTP contract** where it defines stdio post outcomes/correlation, **ACP lifecycle and persistence**, **ACP state endpoints and schema**, **Agent resolution**, **Non-ACP endpoints** process-group rule, and **Environment, shutdown, and image**.
 - This plan is independently executable from a clean checkout after completing `docs/plans/20260823-01-scaffolding.md`; no unfinished Phase 03 code is required.
-- Pin `modernc.org/sqlite` v1.57.0, which requires Go 1.25+ and is compatible with the repository's Go 1.26.7 pin, in `go.mod`/`go.sum`; no test-only modules are allowed.
+- Pin `modernc.org/sqlite` v1.57.0, which requires Go 1.25+ and is compatible with the repository's Go 1.26.8 pin, in `go.mod`/`go.sum`; no test-only modules are allowed.
 - Database timestamps use Unix milliseconds from an injected `func() time.Time` in tests and `time.Now` in production.
 - Persisted event `kind` is one of `request`, `response`, or `notification`; synthetic `_adapter/agent_exited` and `_adapter/invalid_stdout` envelopes are notifications. `request` means only an agent-originated reverse-call. Inbound client messages are never passed to `Store.AppendOutput` and therefore are never persisted.
 - Runtime stdout accepts one valid-UTF-8 JSON object per line. A non-object, malformed JSON, invalid-UTF-8, batch array, or oversized line becomes one `_adapter/invalid_stdout` synthetic notification; raw invalid content is not persisted. The pump then continues when framing permits.
-- Set the stdout line ceiling to the authoritative ACP maximum, 10 MiB. Use `bufio.Reader`, not `bufio.Scanner`, so an oversized line can be drained safely and converted into one synthetic event without permanently stopping the stream.
+- Set the stdout line ceiling to the bridge's 10 MiB JSON body hard ceiling; ACP itself defines no line-length limit. Use `bufio.Reader`, not `bufio.Scanner`, so an oversized line can be drained safely and converted into one synthetic event without permanently stopping the stream.
 - Sequence values are limited everywhere to `0..math.MaxInt64`, matching SQLite `INTEGER`. Store models and queries use `int64`; allocation rejects a watermark at `math.MaxInt64` without inserting an event or mutating server/session state. Future HTTP `after`, `Last-Event-ID`, and DTOs use nonnegative decimal `int64`, never `uint64`.
 - Process tests must verify process-group behavior on Linux with helper test subprocesses: the helper starts a grandchild, reports both PIDs, and blocks; killing negative PGID must terminate both. Tests may skip only when not running on Linux, although production itself is Linux-only.
 - Runtime status transitions in this phase include `creating -> idle`, `idle <-> busy`, and `idle|busy -> exited`. Public `busy` means at least one reserved correlation in `waiting`, lifecycle `grace`, or `committing`; only zero reserved correlations is idle. Notifications and client responses reserve no correlation and never affect busy/idle. Initialize-only recreation, DELETE atomicity, idle TTL, and HTTP-driven instance lifecycle belong to Phase 03.
@@ -131,6 +132,15 @@ type PostResult struct {
 	Accepted bool
 }
 
+type Lifecycle string
+
+const (
+	LifecycleNone   Lifecycle = "none"
+	LifecycleNew    Lifecycle = "new"
+	LifecycleLoad   Lifecycle = "load"
+	LifecycleResume Lifecycle = "resume"
+)
+
 type Pending struct {
 	ID        json.RawMessage
 	Lifecycle Lifecycle
@@ -149,7 +159,7 @@ func (r *Runtime) Wait() error
 func (r *Runtime) Kill(ctx context.Context) error
 ```
 
-`Start` rejects a non-positive request timeout, launches with `syscall.SysProcAttr{Setpgid:true}`, pipes stdio, marks the row live/idle only after successful spawn, and starts pumps. `Post` accepts exactly the three authoritative client envelope forms and alone compacts each validated raw object with stdlib `json.Compact` immediately before JSONL framing; decode-and-re-marshal is forbidden because it changes payload bytes. Every raw string or numeric ID token is at most 128 bytes. String IDs retain their exact decoded value. Numeric IDs additionally have exponent magnitude at most 1,000,000 and use a bounded lexical tuple of sign, normalized significant digits, and decimal scale, without `float64`, arbitrary-precision arithmetic, or power expansion. A request atomically reserves one of 256 correlation slots before writer admission, rejects duplicate canonical IDs, reconciles durable status to busy, and waits for its committed response. Invalid/over-limit IDs or lifecycle metadata return `ErrInvalidEnvelope` before reservation/admission. Pending state stores only canonical ID, lifecycle enum `none|new|load|resume`, optional session ID up to 1024 UTF-8 bytes, and optional cwd up to 4096 UTF-8 bytes. Notifications/client responses reserve no correlation but use the same writer path.
+`Start` rejects a non-positive request timeout, launches with `syscall.SysProcAttr{Setpgid:true}`, pipes stdio, marks the row live/idle only after successful spawn, and starts pumps. Envelope classification and limit checks live in one exported pure function (`ClassifyClientEnvelope`) that `Post` calls before reservation and Phase 03 calls before proxy dispatch. `Post` accepts exactly the three authoritative client envelope forms and alone compacts each validated raw object with stdlib `json.Compact` immediately before JSONL framing; decode-and-re-marshal is forbidden because it changes payload bytes. Every raw string or numeric ID token is at most 128 bytes. String IDs retain their exact decoded value. Numeric IDs additionally have exponent magnitude at most 1,000,000 and use a bounded lexical tuple of sign, normalized significant digits, and decimal scale, without `float64`, arbitrary-precision arithmetic, or power expansion. A request atomically reserves one of 256 correlation slots before writer admission, rejects duplicate canonical IDs, reconciles durable status to busy, and waits for its committed response. Invalid/over-limit IDs or session metadata return `ErrInvalidEnvelope` before reservation/admission. Pending state stores only the canonical ID, the lifecycle enum `none|new|load|resume`, an optional request session ID up to 1024 UTF-8 bytes retained for every session-scoped client method (`docs/references/acp-v1-protocol.md` §5) so response events are attributed like their notifications, and an optional cwd up to 4096 UTF-8 bytes. Notifications/client responses reserve no correlation but use the same writer path.
 
 The 256 cap and public busy count include correlations in `waiting`, lifecycle `grace`, and `committing` states. A request over the cap returns typed `ErrCapacity` before writer admission; Phase 03 maps it to 429. Non-lifecycle timeout removes its correlation and reconciles runtime-owned busy/idle state. Lifecycle timeout detaches the waiter and returns `ErrRequestTimeout` for HTTP 504, but moves the correlation to `grace` and retains its slot, metadata, duplicate-ID reservation, capacity accounting, and busy accounting for exactly 30 seconds using an injected timer seam in unit tests.
 
@@ -159,7 +169,7 @@ All requests, notifications, and client responses enter one fixed-capacity 256 w
 
 When stdout matches a response, the pump acquires the correlation mutex and atomically changes `waiting|grace -> committing`, cancels the grace timer, and copies the attached waiter reference without removing anything from the map. Grace expiry only wins from `grace`; it is a no-op after `committing`. The pump then classifies lifecycle mutation from the still-reserved metadata and calls `AppendOutput` without holding the correlation mutex. On commit success it removes the same committing generation under the correlation mutex, releases that mutex, runs serialized status reconciliation (which re-reads the current map rather than using a stale snapshot), then completes an attached waiter and signals the wakeup. Duplicate posts and capacity checks continue to observe the committing entry until successful removal, and status remains busy throughout grace/commit. If status persistence fails after the output commit, the copied waiter is still available for `ErrPersistence` before kill. On `AppendOutput` failure the map retains enough committing state/waiter reference to fail with `ErrPersistence`; the pump invokes idempotent `Runtime.Kill` outside the mutex, and kill clears every correlation/timer. Error responses and malformed lifecycle success payloads follow exactly the same commit-before-release path because their agent-output event is still durable even though they do not mutate sessions. Response, expiry, concurrent insertion/completion, and kill races use the correlation and status mutexes in that fixed order; store/signal/wait operations never occur under the correlation mutex. Export typed/sentinel errors for invalid envelope, duplicate ID, capacity, timeout, exited process, write failure, and persistence failure so Phase 03 only maps outcomes to HTTP.
 
-For `session/new`, pending metadata has lifecycle cwd but no session ID until a successful matching response supplies `result.sessionId`. Before persistence, the output classifier uses the committing entry's lifecycle enum to identify that successful lifecycle response and assigns its returned session ID and pending cwd to the event/session mutation. An over-limit agent-supplied session ID, error, or malformed success creates no session but the valid output envelope still commits before correlation release. For `session/load` and `session/resume`, correlation uses the bounded request `sessionId` and cwd retained through committing, and mutates the roster/cwd only on a successful matching response. A timed-out lifecycle request creates no session at timeout, but its retained metadata lets a response within 30 seconds do so; late error/malformed output persists before releasing without mutation. No response by grace expiry kills/exits the runtime instead of retaining metadata indefinitely. The runtime never invents an ID, synthesizes a request, or replays a prompt.
+For `session/new`, pending metadata has lifecycle cwd but no session ID until a successful matching response supplies `result.sessionId`. Before persistence, the output classifier uses the committing entry's lifecycle enum to identify that successful lifecycle response and assigns its returned session ID and pending cwd to the event/session mutation. For non-lifecycle session-scoped requests, the response event is attributed with the retained request `sessionId`. An over-limit agent-supplied session ID, error, or malformed success creates no session but the valid output envelope still commits before correlation release. For `session/load` and `session/resume`, correlation uses the bounded request `sessionId` and cwd retained through committing, and mutates the roster/cwd only on a successful matching response. A timed-out lifecycle request creates no session at timeout, but its retained metadata lets a response within 30 seconds do so; late error/malformed output persists before releasing without mutation. No response by grace expiry kills/exits the runtime instead of retaining metadata indefinitely. The runtime never invents an ID, synthesizes a request, or replays a prompt.
 
 The stdout pump strips only JSONL framing whitespace around the one-line object and persists the remaining agent-output JSON bytes without re-marshaling or compacting them. It commits before completing a matching `Post` waiter or attempting a non-blocking send to the capacity-1 wakeup channel. SQLite failure kills the process group, marks exited where possible, closes/fails every pending waiter with the persistence error, and signals no uncommitted output. `Kill` signals the captured negative process-group ID with SIGKILL and waits for process/writer/stdout/stderr goroutines before returning; `Wait` and repeated `Kill` are idempotent confirmations over the same completion. On every direct-child exit, including natural exit, the waiter immediately sends SIGKILL to that captured negative PGID before awaiting pumps, persisting `_adapter/agent_exited`, marking exited/clearing PID, failing waiters, clearing timers/correlations, and closing the wakeup channel. This prevents descendants from retaining pipes or surviving the leader.
 
@@ -332,7 +342,7 @@ This package is private and reachable only through `AGENT_BRIDGE_INTERNAL_MOCK_A
 - [ ] Test controlled delay enables timeout/late-response scenarios; controlled invalid stdout, stderr, and exit affect only their intended streams/process state; malformed input and invalid lifecycle operations return deterministic JSON-RPC errors; notification input produces no implicit response; EOF/cancellation exits cleanly.
 - [ ] Update the Phase 01 dispatch test to expect mock execution rather than the temporary unavailable error and prove invalid host/port still cannot affect private mode.
 - [ ] **RED evidence:** Add a minimal compiling `Run` loop, run `go test ./internal/mockagent ./internal/app`, and retain failing lifecycle/correlation/private-dispatch assertions. Missing package/`Run` is setup evidence only.
-- [ ] Implement `initialize`, `session/new`, `session/load`, `session/resume`, `session/list`, `session/close`, prompt/update/response flow, permission reverse-call correlation, and private controlled-failure options with in-process maps/counters only. Keep control method/parameter names private to package tests and README-free. Replace the Phase 01 temporary hook with `mockagent.Run(ctx, io.Stdin, io.Stdout, io.Stderr)`.
+- [ ] Implement `initialize`, `session/new`, `session/load`, `session/resume`, `session/list`, `session/close`, prompt/update/response flow, permission reverse-call correlation, and private controlled-failure options with in-process maps/counters only. Keep control method/parameter names undocumented wire-level test hooks shared with the Phase 03/06 integration tests (not a public contract) and README-free. Replace the Phase 01 temporary hook with `mockagent.Run(ctx, io.Stdin, io.Stdout, io.Stderr)`.
 - [ ] **GREEN evidence:** Re-run both packages and record all JSONL/dispatch tests passing.
 
 **Verification:** `go test ./internal/mockagent ./internal/app -count=1`
@@ -381,16 +391,16 @@ This package is private and reachable only through `AGENT_BRIDGE_INTERNAL_MOCK_A
 
 **Symbols:** `Runtime.Events`; private `readOutput`, `classifyOutput`, `sessionMutation`, `persistSynthetic`, `signalCommitted`
 
-**References:** Master sections **ACP HTTP contract** and **ACP lifecycle and persistence**; `acpstore.AppendOutput`; private mock agent.
+**References:** Master sections **ACP HTTP contract** and **ACP lifecycle and persistence**; `docs/references/acp-v1-protocol.md` §5 (session-scoped field map); `acpstore.AppendOutput`; private mock agent.
 
 **Strict test-first steps:**
 
 - [ ] Unit-test classification of agent requests (`method` plus non-null ID), responses (`id` plus exactly one result/error), notifications (`method` without ID), numeric/string IDs, invalid objects, arrays, and `id:null`.
-- [ ] Test session metadata is inspected only for `session/new`, `session/load`, `session/resume`, and session-scoped messages, extracting only bounded `sessionId`/`cwd`; unrelated content with those key names must not mutate sessions. Over-limit agent metadata is omitted from classified event/session fields while the raw envelope payload persists. For a successful `session/new` response, use its matching pending lifecycle enum plus `result.sessionId` and pending cwd even though pending metadata has no prior session ID. For successful load/resume, use request session ID/cwd correlation. Error responses do not mutate sessions.
+- [ ] Test session metadata is inspected only for `session/new`, `session/load`, `session/resume`, and the session-scoped methods enumerated in `docs/references/acp-v1-protocol.md` §5, extracting only bounded `sessionId`/`cwd`; unrelated content with those key names must not mutate sessions. Over-limit agent metadata is omitted from classified event/session fields while the raw envelope payload persists. For a successful `session/new` response, use its matching pending lifecycle enum plus `result.sessionId` and pending cwd even though pending metadata has no prior session ID. For successful load/resume, use request session ID/cwd correlation. Error responses do not mutate sessions.
 - [ ] Test valid agent output containing insignificant leading/trailing framing whitespace and deliberately non-compact internal whitespace persists and returns the exact object bytes after framing removal. It must not be decoded/re-marshaled or compacted.
 - [ ] Integration-test mock output order: after each `Events()` wakeup, the committed output must already be queryable in SQLite. Fill the capacity-1 channel, commit several more outputs without consuming it, and prove sends never block and one wakeup is enough to query every sequence. Test malformed/non-object/invalid-UTF-8/oversized lines produce one persisted `_adapter/invalid_stdout` notification each and subsequent valid lines still commit.
 - [ ] Test a natural mock exit persists `_adapter/agent_exited`, then marks exited and closes the wakeup channel. Assert only agent stdout/synthetic events exist; sent client payloads do not appear in the DB.
-- [ ] Close/fault the store during output and assert runtime kills the entire process group, marks/fails as far as storage permits, logs the storage error, and signals no uncommitted wakeup. Typed waiter failure is added in Task 2.9; HTTP 507 mapping remains Phase 03.
+- [ ] Close/fault the store during output and assert runtime kills the entire process group, marks/fails as far as storage permits, logs the storage error, and signals no uncommitted wakeup. Typed waiter failure is added in Task 2.9c; HTTP 507 mapping remains Phase 03.
 - [ ] **RED evidence:** With a compiling wakeup/output skeleton, run `go test ./internal/acpruntime -run 'Test(ClassifyOutput|RuntimeOutput|WakeupCoalescing)'`; retain behavioral failures showing premature wakeup, altered payload bytes, or a blocked full wakeup channel.
 - [ ] Implement a bounded `bufio.Reader` line loop that drains overlong lines, removes only JSONL framing whitespace, requires `utf8.Valid` before validating one JSON object without replacing its bytes, classifies routing fields only, calls `AppendOutput`, and attempts `select { case wake <- struct{}{}: default: }` only after commit. Create the wake channel with capacity one and ensure one owner closes it after stdout and exit persistence complete.
 - [ ] **GREEN evidence:** Run focused tests under `-race -count=10`; retain commit-before-observe, invalid-line recovery, natural-exit, and store-failure assertions passing.
@@ -403,24 +413,73 @@ This package is private and reachable only through `AGENT_BRIDGE_INTERNAL_MOCK_A
 
 **Deliverable:** Commit-before-event-publication ACP stdout ingestion with minimal metadata inspection and failure containment.
 
-### Task 2.9: Correlate JSON-RPC Posts in the Stdio Runtime
+### Task 2.9a: Classify Client Envelopes and Canonical IDs
 
-**Description:** Make `Runtime.Post` the single owner of compact JSONL forwarding, bounded correlation state, lexical JSON-number ID matching, timeout/grace expiry, and committed-response delivery so Phase 03 remains an HTTP/lifecycle adapter.
+**Description:** Implement the pure client-envelope classifier, numeric-ID canonicalization, and JSONL byte-fidelity helpers shared by `Runtime.Post` and the Phase 03 HTTP layer.
+
+**Files:** `internal/acpruntime/envelope.go`, `internal/acpruntime/envelope_test.go`, `internal/acpruntime/post.go`
+
+**Symbols:** `ClassifyClientEnvelope`, `Pending`, `PostResult`; private `idKey`
+
+**References:** Master sections **ACP HTTP contract** and **ACP lifecycle and persistence**; `docs/references/acp-v1-protocol.md` §5; Task 2.8.
+
+**Strict test-first steps:**
+
+- [ ] Table-test client classification: request is `method` plus non-null string/number ID; notification is `method` without ID; client response has non-null ID, no method, and exactly one of `result`/`error`; reject arrays, invalid UTF-8 even when `json.Valid` accepts it, `id:null`, missing/invalid method, invalid ID types, and ambiguous response envelopes before reservation or stdin write.
+- [ ] Test `idKey` preserves exact decoded string ID values and distinguishes strings from numbers. Cover raw string and numeric ID token boundaries at 128/129 bytes. For numbers, table-test canonical behavior for `1`, `1.0`, `1e0`, invalid `01`, signed/decimal/exponent forms, normalized positive/negative zero, redundant zeros, unequal values, and exponent magnitude 1,000,000/1,000,001. Use `testing.AllocsPerRun` on boundary-sized tokens to enforce a small fixed allocation ceiling. Treat the single-pass/O(token-length), no-power-expansion, and no `float64`/arbitrary-precision restrictions as implementation review criteria rather than timing tests.
+- [ ] Assert `ClassifyClientEnvelope` is the only client-envelope validation path: `Runtime.Post` rejects the same corpus with `ErrInvalidEnvelope`, and the exported function is imported by `internal/httpapi`.
+- [ ] Implement one exported pure `ClassifyClientEnvelope` (shape/kind classification plus ID and session/cwd limits) and the private bounded lexical `idKey` in `internal/acpruntime/envelope.go`; no I/O and no writer/queue state.
+- [ ] **GREEN evidence:** Run `go test -race ./internal/acpruntime -run 'Test(Classify|IDKey|Envelope)' -count=20` and record the classification/limit assertions passing.
+
+**Verification:** `go test -race ./internal/acpruntime -run 'Test(Classify|IDKey|Envelope)' -count=20`
+
+**Risk:** High because these rules are the single source of truth for HTTP 400 and runtime rejection.
+
+**Reversibility:** Easy before Phase 03 consumes the exported function.
+
+**Deliverable:** One exported classification/validation function with bounded canonical IDs, shared by `Runtime.Post` and Phase 03.
+
+### Task 2.9b: Serialize Writer Admission and JSONL Framing
+
+**Description:** Implement the single bounded writer path: compact JSONL records, capacity-256 admission, per-envelope timeout, and partial-write containment.
+
+**Files:** `internal/acpruntime/post.go`, `internal/acpruntime/post_test.go`, `internal/acpruntime/runtime.go`, `internal/acpruntime/runtime_integration_test.go`
+
+**Symbols:** private writer queue and writer-goroutine symbols; `PostResult.Accepted`
+
+**References:** Master sections **ACP HTTP contract** and **ACP lifecycle and persistence**; Task 2.9a.
+
+**Strict test-first steps:**
+
+- [ ] Prove stdin byte fidelity: every line the runtime writes to the agent equals `json.Compact(raw)` byte-for-byte for payloads containing `<`, `>`, `&`, `\uXXXX` escapes, and numeric lexemes such as `1e0`; a decode-and-re-marshal implementation must fail this assertion.
+- [ ] Test requests, notifications, and client responses all use the same capacity-256 writer admission path and configured timeout. Fill admission with a blocked writer and prove bounded state; timeout before any bytes rejects only that envelope, while timeout after a partial line kills/reaps the runtime and fails all pending work. Notifications/client responses return `PostResult{Accepted:true}` only after one complete write and create no correlation/persistence state. Use the permission mock flow to prove a forwarded client response completes the agent reverse-call and eventually the original prompt request.
+- [ ] Use a child that never reads stdin and enough payload to block the pipe. Assert every envelope timer starts before writer admission; timeout before the writer emits bytes removes only that item, while timeout/cancellation after a partial line kills and reaps the runtime, unblocks and joins the writer, releases every correlation/status reservation, and rejects later posts instead of reusing partial JSONL.
+- [ ] Test a write failure before any bytes removes only that envelope and pending request, if any; a partial write follows the fatal runtime path above.
+- [ ] Implement one capacity-256 writer queue and one writer goroutine for every envelope type; start the configured timeout before admission; on pre-write timeout remove only that item and any correlation, leaving the runtime usable; on any partial line kill/reap the process group, join the writer, and never reuse the stream.
+- [ ] **GREEN evidence:** Run `go test -race ./internal/acpruntime -run 'Test(Writer|PostWrite|PostTimeout|ByteFidelity)' -count=20` and record byte-fidelity, accepted, and timeout assertions passing.
+
+**Verification:** `go test -race ./internal/acpruntime -run 'Test(Writer|PostWrite|PostTimeout|ByteFidelity)' -count=20`
+
+**Risk:** High because a partially written JSONL record must never be reused.
+
+**Reversibility:** Easy before HTTP integration.
+
+**Deliverable:** A single bounded writer path with exact compact-JSONL framing and safe partial-write containment.
+
+### Task 2.9c: Correlate, Commit, and Reconcile Runtime Status
+
+**Description:** Implement correlation state, duplicate/capacity protection, lifecycle grace, commit-before-release ordering, serialized busy/idle reconciliation, and persistence-failure containment.
 
 **Files:** `internal/acpruntime/post.go`, `internal/acpruntime/post_test.go`, `internal/acpruntime/runtime.go`, `internal/acpruntime/output.go`, `internal/acpruntime/runtime_integration_test.go`
 
-**Symbols:** `PostResult`, `Pending`, `Runtime.Post`; exported typed/sentinel `ErrInvalidEnvelope`, `ErrDuplicateID`, `ErrCapacity`, `ErrRequestTimeout`, `ErrExited`, `ErrWrite`, `ErrPersistence`; private `idKey`, `pendingRequest`, `reconcileStatus`, `completeResponse`, `expireLifecycle`, `failPending`
+**Symbols:** exported typed/sentinel `ErrInvalidEnvelope`, `ErrDuplicateID`, `ErrCapacity`, `ErrRequestTimeout`, `ErrExited`, `ErrWrite`, `ErrPersistence`; private `pendingRequest`, `reconcileStatus`, `completeResponse`, `expireLifecycle`, `failPending`
 
 **References:** Master sections **ACP HTTP contract** and **ACP lifecycle and persistence**; target runtime interface and Task 2.8 commit ordering.
 
 **Strict test-first steps:**
 
-- [ ] Table-test client classification: request is `method` plus non-null string/number ID; notification is `method` without ID; client response has non-null ID, no method, and exactly one of `result`/`error`; reject arrays, invalid UTF-8 even when `json.Valid` accepts it, `id:null`, missing/invalid method, invalid ID types, and ambiguous response envelopes before reservation or stdin write.
-- [ ] Prove stdin byte fidelity: every line the runtime writes to the agent equals `json.Compact(raw)` byte-for-byte for payloads containing `<`, `>`, `&`, `\uXXXX` escapes, and numeric lexemes such as `1e0`; a decode-and-re-marshal implementation must fail this assertion.
-- [ ] Test `idKey` preserves exact decoded string ID values and distinguishes strings from numbers. Cover raw string and numeric ID token boundaries at 128/129 bytes. For numbers, table-test canonical behavior for `1`, `1.0`, `1e0`, invalid `01`, signed/decimal/exponent forms, normalized positive/negative zero, redundant zeros, unequal values, and exponent magnitude 1,000,000/1,000,001. Use `testing.AllocsPerRun` on boundary-sized tokens to enforce a small fixed allocation ceiling. Treat the single-pass/O(token-length), no-power-expansion, and no `float64`/arbitrary-precision restrictions as implementation review criteria rather than timing tests.
 - [ ] Start the strict mock and test a request registers pending metadata before writer admission, stores only canonical ID/lifecycle enum/optional bounded session ID/cwd, writes exactly one compact JSONL record, persists the idle-to-busy transition, waits, and returns the exact committed agent response bytes after framing removal. With multiple waiting/grace/committing correlations, remain busy while any reservation exists; successful removal of the final entry persists idle/new idle timestamp, while grace expiry or process failure transitions to exited instead. Notifications/client responses never alter status.
 - [ ] Post mathematically equivalent numeric IDs concurrently and assert one request proceeds while the duplicate returns `ErrDuplicateID` without writing a second line. Different numeric values and exact string IDs proceed independently; invalid/over-limit numeric IDs return `ErrInvalidEnvelope` without reserving capacity or writing.
-- [ ] Test requests, notifications, and client responses all use the same capacity-256 writer admission path and configured timeout. Fill admission with a blocked writer and prove bounded state; timeout before any bytes rejects only that envelope, while timeout after a partial line kills/reaps the runtime and fails all pending work. Notifications/client responses return `PostResult{Accepted:true}` only after one complete write and create no correlation/persistence state. Use the permission mock flow to prove a forwarded client response completes the agent reverse-call and eventually the original prompt request.
 - [ ] Post `session/new` and assert pending has bounded cwd but `SessionID == nil` until a successful response; pending state retains only the lifecycle enum, never an arbitrary method. Test session ID 1024/1025-byte and cwd 4096/4097-byte boundaries: over-limit client metadata returns `ErrInvalidEnvelope` before reservation/admission, while over-limit agent metadata persists the envelope without session mutation. Assert valid new/load/resume session/cwd mutation commits with output.
 - [ ] After replacing the mock with a fresh subprocess, post explicit `session/load` and `session/resume` for a formerly known ID; assert `Runtime.Post` returns the mock's exact unknown-session JSON-RPC response, persists it normally, and emits no synthesized prompt/request/update.
 - [ ] With injected timeout/grace timers, assert lifecycle timeout returns `ErrRequestTimeout`, detaches the waiter, retains only minimal metadata/ID and busy/capacity accounting for exactly 30 seconds, and keeps an equivalent duplicate at `ErrDuplicateID`.
@@ -431,16 +490,15 @@ This package is private and reachable only through `AGENT_BRIDGE_INTERNAL_MOCK_A
 - [ ] Inject status persistence failure during initial insertion and final removal reconciliation. Assert no request is reported successful, attached/all waiters receive `ErrPersistence`, the runtime kills/exits, timers/correlations are cleared, and no later queued reconciliation overwrites exited status.
 - [ ] Fail `AppendOutput` for a committing response and assert the duplicate/capacity reservation and attached waiter remain until runtime failure handling supplies `ErrPersistence`; `Kill` then exits and clears all correlation/timer state. Race response match, grace expiry, commit completion/failure, duplicate Post, and Kill under `-race`; expiry must never win after `committing`.
 - [ ] Drive repeated unique lifecycle timeouts to 256 waiting+grace+committing correlations and assert the next request returns `ErrCapacity` before writer admission. Advance grace for an unclaimed entry and prove expiry calls `Kill`, exits the runtime, releases every slot/timer/waiter, and closes every runtime-owned completion channel within a bounded deadline. Non-lifecycle timeout releases capacity immediately.
-- [ ] Use a child that never reads stdin and enough payload to block the pipe. Assert every envelope timer starts before writer admission; timeout before the writer emits bytes removes only that item, while timeout/cancellation after a partial line kills and reaps the runtime, unblocks and joins the writer, releases every correlation/status reservation, and rejects later posts instead of reusing partial JSONL.
 - [ ] Instrument store and event consumption to prove the matching response transaction commits before either the `Post` waiter returns or `Events()` exposes it. On commit failure, assert no waiter/event delivery, the process group dies, and every pending post receives `ErrPersistence` for future HTTP 507 mapping.
-- [ ] Test a write failure before any bytes removes only that envelope and pending request, if any; a partial write follows the fatal runtime path above. Natural/controlled direct-child exit first SIGKILLs the captured negative PGID, then joins pumps and fails all pending posts with `ErrExited`. After a complete write, cancellation of one caller removes only its waiter and does not cancel output persistence, and when that request never receives a response its non-lifecycle slot and busy accounting are released when the configured timeout elapses, so capacity cannot leak.
+- [ ] Natural/controlled direct-child exit first SIGKILLs the captured negative PGID, then joins pumps and fails all pending posts with `ErrExited`. After a complete write, cancellation of one caller removes only its waiter and does not cancel output persistence, and when that request never receives a response its non-lifecycle slot and busy accounting are released when the configured timeout elapses, so capacity cannot leak.
 - [ ] **RED evidence:** With compiling `Post`/error/timer/store-gate stubs, run `go test ./internal/acpruntime -run 'Test(Post|IDKey|Pending|Capacity|LifecycleGrace|Committing|StatusReconcile)'`; retain behavioral failures for sole-owner compaction, bounded lexical equivalence, cap enforcement, public busy semantics, stale-idle interleaving, grace/commit races, release ordering, and commit-failure cleanup.
-- [ ] Implement one correlation mutex/map capped at 256 with explicit `waiting`, `grace`, and `committing` states, plus a distinct status-transition mutex; one capacity-256 queue and writer goroutine owned by `Runtime.Post` for every envelope type; configured timeout before admission/write; and fixed 30-second lifecycle grace with injected test timers. Notifications/client responses bypass only correlation/status, not writer admission.
+- [ ] Implement one correlation mutex/map capped at 256 with explicit `waiting`, `grace`, and `committing` states, plus a distinct status-transition mutex and fixed 30-second lifecycle grace with injected test timers, on top of the Task 2.9b writer. Notifications/client responses bypass only correlation/status, not writer admission.
 - [ ] After every insertion/removal that can change zero/nonzero, invoke `reconcileStatus`: lock status transitions, reject/no-op if terminal, re-read total correlations under the correlation lock, release correlation lock, write busy/idle, then release status lock. Route initial live/idle, correlation status, and exit status writes through the same status mutex; exit records terminal state before releasing it. Never carry a previously captured count into SQL, never hold correlation lock during SQL, and on any status error fail/kill the runtime.
 - [ ] On a matched response, transition the exact map entry to `committing` and stop its timer under lock, retain the entry/metadata/waiter/accounting, build the classified `Output`, and call `AppendOutput` unlocked. After success, remove only that same committing entry under lock, call serialized reconciliation, then complete the copied waiter and signal wakeup. If append/status persistence fails, preserve enough entry/waiter state, fail through `ErrPersistence`, and kill; never expose an uncommitted waiter/wakeup or let grace expiry remove a committing entry. Unmatched responses still persist and may wake consumers normally.
 - [ ] **GREEN evidence:** Run the focused suite under `-race -count=20`; retain passing capacity, lexical-equivalent duplicate, timeout/grace/committing races, serialized current-count status, commit-held accounting, error/malformed release order, reverse-call, lifecycle atomicity, exit, and persistence-failure cleanup evidence.
 
-**Verification:** `go test -race ./internal/acpruntime -run 'Test(Post|IDKey|Pending|Capacity|LifecycleGrace|Committing|StatusReconcile)' -count=20`
+**Verification:** `go test -race ./internal/acpruntime -run 'Test(Post|Pending|Capacity|LifecycleGrace|Committing|StatusReconcile)' -count=20`
 
 **Risk:** High because bounded canonicalization, duplicate/capacity handling, commit order, and grace-expiry cleanup define core ACP correctness.
 
@@ -514,9 +572,11 @@ This package is private and reachable only through `AGENT_BRIDGE_INTERNAL_MOCK_A
 | 2.6 | Completed Phase 01 private dispatch |
 | 2.7 | 2.2, 2.5 |
 | 2.8 | 2.3, 2.6, 2.7 |
-| 2.9 | 2.6, 2.7, 2.8 |
+| 2.9a | 2.6, 2.7, 2.8 |
+| 2.9b | 2.9a |
+| 2.9c | 2.9b |
 | 2.10 | 2.6, 2.7 |
-| 2.11 | 2.4, 2.7, 2.8, 2.9, 2.10, completed Phase 01 lifecycle |
+| 2.11 | 2.4, 2.7, 2.8, 2.9c, 2.10, completed Phase 01 lifecycle |
 
 ## Phase Deliverables
 

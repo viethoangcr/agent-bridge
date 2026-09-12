@@ -1,6 +1,7 @@
 # Plan: Phase 06 - Runtime Image, E2E, Hardening, And Docs
 
 **Date:** 2026-08-23
+**Revised:** 2026-09-12
 **Status:** DRAFT
 **Risk Level:** High
 
@@ -19,6 +20,7 @@ Produce a digest-pinned multi-stage image for Linux amd64 and arm64 that contain
 ### Authoritative References
 
 - `docs/plans/20260815-agent-bridge.md`, all requirements, especially "Agent resolution", "Environment, shutdown, and image", and the final open question about authenticated E2E.
+- `docs/references/acp-v1-protocol.md`: ACP v1 factual baseline (session-scoped field map §5, keyless/auth behavior §9); all ACP claims must be checked against it.
 - Completed Phase 01-05 plans and implementation. This plan is self-contained about expected externally visible behavior and must not weaken earlier tests.
 - Rust lifecycle references: `/home/viethoangcr/Workspace/github/rivet/sandbox-agent/server/packages/acp-http-adapter/src/process.rs` and `/home/viethoangcr/Workspace/github/rivet/sandbox-agent/server/packages/sandbox-agent/src/acp_proxy_runtime.rs`.
 
@@ -27,6 +29,7 @@ Produce a digest-pinned multi-stage image for Linux amd64 and arm64 that contain
 - The npm package names are `@agentclientprotocol/claude-agent-acp@0.68.0`, `@agentclientprotocol/codex-acp@1.3.0`, and `opencode-ai@1.18.18`; implementation must fail rather than substitute a package if these names do not expose `claude-agent-acp`, `codex-acp`, and `opencode` respectively.
 - Runtime image files are under `docker/runtime/`: `Dockerfile`, `Dockerfile.dockerignore`, `package.json`, and `package-lock.json`. The Docker build context remains the repository root so Go source is available. `npm ci` runs without `--ignore-scripts`, `--omit=optional`, or flags that suppress optional dependencies/lifecycle scripts.
 - Every `FROM` reference is pinned by digest at implementation. In particular the final stage is `node:24-bookworm-slim@sha256:<verified multi-platform manifest digest>`; no placeholder digest may remain in a completed change.
+- Node 24 leaves active LTS on 2026-10-20 and Node 26 becomes LTS on 2026-10-28. If this phase executes after 2026-10-28, base the runtime stage on `node:26-bookworm-slim` (digest-pinned) instead; Claude declares `engines: >=22`, while codex-acp and opencode-ai declare no engine range.
 - Docker BuildKit/buildx is available for image verification. Regular E2E runs use the host architecture; CI or release verification runs the explicit `linux/amd64,linux/arm64` build.
 - E2E tests are Go stdlib tests under build tag `e2e`, invoke the Docker CLI, bind an ephemeral localhost port discovered by Docker, and skip with a precise reason only when Docker is unavailable. Every Go file in `tests/e2e`, including helpers and tests, carries the `e2e` build tag so plain `go test ./...` remains valid. Once Docker is available, individual behavioral failures must not skip.
 - The private `mock` agent is exercised only by tests and is omitted from `README.md`, image labels, and public examples.
@@ -38,7 +41,7 @@ Produce a digest-pinned multi-stage image for Linux amd64 and arm64 that contain
 
 ## Requirements
 
-- Build `agent-bridge` with exactly Go 1.26.7, `CGO_ENABLED=0`, `-trimpath`, and target `TARGETOS/TARGETARCH` in a builder stage.
+- Build `agent-bridge` with exactly Go 1.26.8, `CGO_ENABLED=0`, `-trimpath`, and target `TARGETOS/TARGETARCH` in a builder stage.
 - Use digest-pinned builder and runtime bases; avoid network access after dependency installation stages.
 - Install exact npm versions from committed lockfile with `npm ci`; preserve install scripts and optional dependencies.
 - Include checksum-pinned Tini 0.19.0 and run it as PID 1; its exec-form entrypoint launches the bridge, forwards signals, and reaps orphaned descendants while the container remains running.
@@ -55,7 +58,7 @@ Produce a digest-pinned multi-stage image for Linux amd64 and arm64 that contain
 
 ```mermaid
 flowchart LR
-    Source[Go source + locked npm manifest] --> Builder[Digest-pinned Go 1.26.7 builder]
+    Source[Go source + locked npm manifest] --> Builder[Digest-pinned Go 1.26.8 builder]
     Builder --> Binary[Target static agent-bridge]
     Lock[package-lock.json] --> NPM[npm ci agent stage]
     Binary --> Runtime[Digest-pinned Node 24 slim runtime]
@@ -196,12 +199,12 @@ func initialize(t *testing.T, c *container, serverID, agent string) rpcEnvelope
 **RED:**
 
 - [ ] Add behavioral Dockerfile contract assertions against a minimal fixture for digest-pinned bases, target args, per-architecture Tini 0.19.0 SHA-256 pins, non-root user, token-safe host defaults, and the `tini -- agent-bridge` entrypoint; retain assertion failures rather than treating a missing Dockerfile as RED.
-- [ ] Resolve current multi-platform manifest digests for the exact `golang:1.26.7-bookworm` builder and Node 24 bookworm-slim runtime images with `docker buildx imagetools inspect`; record architecture support.
+- [ ] Resolve current multi-platform manifest digests for the exact `golang:1.26.8-bookworm` builder and Node 24 bookworm-slim runtime images with `docker buildx imagetools inspect`; record architecture support.
 - [ ] Run the planned host build command and retain the expected failure before Dockerfile creation.
 
 **GREEN:**
 
-- [ ] Use `FROM --platform=$BUILDPLATFORM golang:1.26.7-bookworm@sha256:<digest>` (exact tag matching the go.mod patch pin, never a floating `golang:1.26` or `1.26.7` without digest) and compile with `CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags='-s -w' -o /out/agent-bridge ./cmd/agent-bridge`.
+- [ ] Use `FROM --platform=$BUILDPLATFORM golang:1.26.8-bookworm@sha256:<digest>` (exact tag matching the go.mod patch pin, never a floating `golang:1.26` or `1.26.8` without digest) and compile with `CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags='-s -w' -o /out/agent-bridge ./cmd/agent-bridge`.
 - [ ] Add a disposable target-aware `binary-verify` tooling stage that uses `file`/`readelf` (or equivalent pinned tooling) to reject the wrong ELF architecture, a dynamic interpreter, or `NEEDED` entries. Copy only the verified binary onward; do not retain these tools in runtime.
 - [ ] Cache Go module/build directories with BuildKit mounts while copying `go.mod`/`go.sum` before source for stable layers.
 - [ ] In the digest-pinned Node 24 `agent-deps` stage, set `WORKDIR /opt/agents`, copy `docker/runtime/package.json` and `docker/runtime/package-lock.json` there, and run `npm ci --include=optional`. This makes the committed lock resolve directly to `/opt/agents/node_modules`, matching runtime PATH. Do not use `npm install -g`, `--ignore-scripts`, or runtime installs.
@@ -288,7 +291,7 @@ scripts/verify-agents.sh --image agent-bridge:e2e
 **RED:**
 
 - [ ] Create table subtests for `claude`, `codex`, and `opencode`; each must first complete ACP `initialize` and persist its response/event.
-- [ ] For Claude/Codex, send `session/new` with a container-writable cwd and accept only success or a valid ACP auth-required error envelope; reject crashes, HTTP problems, hangs, and unrelated errors.
+- [ ] For Claude/Codex, send `session/new` with a container-writable cwd and accept success or a valid ACP auth-required error envelope; then send one prompt for each and accept success or a structural `-32000` auth-required envelope (Claude keyless `session/new` normally succeeds and its auth error surfaces at `session/prompt`). Reject crashes, HTTP problems, hangs, and unrelated errors.
 - [ ] For OpenCode, require `session/new` success and a non-empty session ID, then send one prompt and accept success or ACP auth failure while requiring the process to remain supervised.
 - [ ] If session load is exercised, tolerate OpenCode's omitted `sessionId` only in the 1.18.18 response while requiring bridge session state to retain the requested ID.
 - [ ] Assert no host credential paths, API-key environment variables, or browser processes are present in the container.
@@ -298,7 +301,7 @@ scripts/verify-agents.sh --image agent-bridge:e2e
 
 - [ ] Correct image PATH, HOME, package installation, default agent args, or process environment sanitization as indicated; do not add special success paths for E2E.
 - [ ] Bound each initialize/session operation independently so one agent hang identifies the exact binary.
-- [ ] Keep auth-error matching structural (ACP error envelope and auth semantics), not a broad substring that accepts arbitrary failures.
+- [ ] Keep auth-error matching structural and assert the JSON-RPC code `-32000` explicitly; never use a broad substring that accepts arbitrary failures.
 
 **Verify:** `go test -tags=e2e ./tests/e2e -run TestDockerKeylessAgents -count=1 -v -timeout=10m`
 
@@ -421,6 +424,9 @@ go test -tags=e2e ./tests/e2e -count=1 -v -timeout=20m
 - [ ] State that the bridge adds no event-retention subsystem; operators may apply an OS/container volume quota if the accepted unbounded-until-DELETE disk risk needs a hard bound.
 - [ ] Explain keyless outcomes and explicitly defer authenticated prompt/resume E2E; never imply credentials are included in the image.
 - [ ] Document graceful shutdown's one-budget 10-second staged contract and which paths must be mounted for persistence.
+- [ ] Document the headless auth limitation: the bridge does not advertise `clientCapabilities.auth.terminal`, agents may advertise no auth methods, unauthenticated sessions fail in-band with `-32000`, and environment-based credentials are the supported path.
+- [ ] Document the required persistent mounts for resume: agent home directories (`~/.claude`, `~/.codex`, OpenCode state) and the `AGENT_BRIDGE_DB` parent must survive container restarts; a container without them loses resume state.
+- [ ] Update the `GET /` `docs` field to the final public documentation URL chosen in this task and assert it in the documentation checklist test.
 
 **Verify:**
 
@@ -452,7 +458,7 @@ grep -q 'OpenCode 1.18.18' README.md
 **GREEN:**
 
 - [ ] Create `.github/workflows/ci.yml` with least-privilege read permissions and only these triggers: `pull_request`; `push` with `branches: [main]`; one weekly `schedule`; and `workflow_dispatch`. Pin every non-local action, including GitHub-owned and Docker actions, as `owner/repository@<full-40-character-commit-SHA>`; tags, branches, abbreviated SHAs, and floating major versions are forbidden.
-- [ ] Gate formatting/unit/vet/race/static jobs and the token-authenticated keyless host-architecture Docker E2E job with `if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')`. Start verification with `test "$(go env GOVERSION)" = go1.26.7`. Formatting must only detect drift with `test -z "$(gofmt -l cmd internal tests)"` or an equivalent non-writing check; verification must never run `gofmt -w`. Static checks include the `CGO_ENABLED=0` build, host/tooling-stage ELF inspection, pinned staticcheck 2026.2.1, and pinned govulncheck v1.7.0, all run with `-tags=e2e` so the tag-gated package is analyzed instead of being silently skipped by `./...`.
+- [ ] Gate formatting/unit/vet/race/static jobs and the token-authenticated keyless host-architecture Docker E2E job with `if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')`. Start verification with `test "$(go env GOVERSION)" = go1.26.8`. Formatting must only detect drift with `test -z "$(gofmt -l cmd internal tests)"` or an equivalent non-writing check; verification must never run `gofmt -w`. Static checks include the `CGO_ENABLED=0` build, host/tooling-stage ELF inspection, pinned staticcheck 2026.2.1, and pinned govulncheck v1.7.0, all run with `-tags=e2e` so the tag-gated package is analyzed instead of being silently skipped by `./...`.
 - [ ] In the host-architecture Docker E2E job, build the image, run runtime verification, supply a generated non-empty test token, and execute keyless/mock E2E without agent credentials. Do not print the token or use the insecure-remote override.
 - [ ] Gate the non-publishing `linux/amd64,linux/arm64` build/OCI inspection job with `if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`. It must not run for `pull_request`; manual execution occurs only through `workflow_dispatch`. Keep live authenticated real-agent prompt/resume deferred until isolated CI credentials exist.
 - [ ] Remove nondeterministic build inputs such as unpinned base tags, semver ranges, generated lock drift, timestamps embedded by custom scripts, or architecture-hardcoded copies.
@@ -462,7 +468,7 @@ grep -q 'OpenCode 1.18.18' README.md
 **Verify:**
 
 ```sh
-test "$(go env GOVERSION)" = go1.26.7
+test "$(go env GOVERSION)" = go1.26.8
 test -z "$(gofmt -l cmd internal tests)"
 go vet -tags=e2e ./...
 go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 -tags=e2e ./...

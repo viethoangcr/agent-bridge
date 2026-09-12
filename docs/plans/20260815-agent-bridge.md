@@ -1,7 +1,7 @@
 # Specification: agent-bridge
 
 **Date:** 2026-08-15
-**Revised:** 2026-08-23
+**Revised:** 2026-09-12
 **Status:** DRAFT
 **Risk Level:** High
 
@@ -19,7 +19,7 @@ Deliver `agent-bridge` with client-compatible ACP behavior for Claude Code, Code
 
 ### Platform and dependencies
 
-- Linux only; exactly Go 1.26.7 for local and CI builds; `net/http` method/path ServeMux patterns.
+- Linux only; exactly Go 1.26.8 for local and CI builds; `net/http` method/path ServeMux patterns. Methodless same-path route fallbacks are forbidden: Go 1.22+ `ServeMux` panics when they conflict with the root `GET /{$}` pattern (see Phase 01 Task 1.6).
 - Go stdlib plus one external module: pure-Go `modernc.org/sqlite` through `database/sql`. No other production or test modules.
 - Build with `CGO_ENABLED=0` as one static binary. SQLite DB/WAL files are runtime state, not embedded assets.
 - No runtime agent download/install/update code.
@@ -31,14 +31,15 @@ Deliver `agent-bridge` with client-compatible ACP behavior for Claude Code, Code
 - Startup fails when `AGENT_BRIDGE_HOST` is non-loopback and no token is configured unless `AGENT_BRIDGE_ALLOW_INSECURE_REMOTE=1`. The runtime image binds `0.0.0.0`, so normal image startup requires a token.
 - Every non-2xx response for a request that reaches routing/handlers, including router 404/405, malformed body, and body-limit failures, is `application/problem+json` using RFC 9457 fields `{type,title,status,detail}` and top-level extension members. Transport errors produced before routing, such as malformed request lines or oversized headers, are exceptions.
 - ACP JSON-RPC error envelopes are HTTP 200 responses, not HTTP problem responses.
-- Agent stderr included in a 502 is capped at 8KiB under `agentStderr`. In lines containing case-insensitive `token|key|secret|password` followed by `:` or `=`, replace the remainder with `[REDACTED]`.
+- Agent stderr, when a process was started, is included in a 502 capped at 8KiB under `agentStderr`. In lines containing case-insensitive `token|key|secret|password` followed by `:` or `=`, replace the remainder with `[REDACTED]`.
+- The bridge never advertises `clientCapabilities.auth.terminal`: it owns spawning and cannot present an interactive terminal, so agents may advertise no auth methods and unauthenticated sessions fail in-band with `-32000`. Environment-based credentials are the supported auth path; the limitation is documented publicly.
 
 ### ACP HTTP contract
 
 - Server IDs are client-defined, 1-128 bytes, using only ASCII letters, digits, `.`, `_`, and `-`.
 - `POST /v1/acp/{serverId}` requires `Content-Type: application/json`; media-type parameters are allowed. Missing `Accept`, `application/json`, `application/*`, or `*/*` is accepted; otherwise 406.
-- Body is one valid-UTF-8 JSON-RPC 2.0 object, maximum 10MiB. Batch arrays, invalid UTF-8, and `id:null` are invalid. IDs may be strings or bounded JSON numbers; every raw ID token, including quotes/escapes for strings, is at most 128 bytes. String IDs match exactly. Numeric IDs have exponent magnitude at most 1,000,000 and match by an O(token-length) canonical tuple of sign, normalized significant digits, and base-10 exponent without expanding powers of ten; `1`, `1.0`, and `1e0` correlate. Invalid/over-limit IDs are 400. `Runtime.Post` alone compacts the validated object to one line before stdio forwarding. Compaction is whitespace-only stdlib `json.Compact` on the validated raw bytes; decode-and-re-marshal is forbidden because `json.Marshal` HTML-escapes (`<`, `>`, `&`) and normalizes number lexemes (`1e0` → `1`), which would break raw-byte fixtures.
-- Client request (`method` plus non-null `id`) waits for the matching response and returns 200. Duplicate active or grace-retained IDs on one server return 409. Each runtime permits at most 256 pending plus retained correlations; excess returns 429. Default timeout is 120s via `AGENT_BRIDGE_ACP_REQUEST_TIMEOUT_MS`; timeout returns 504. Non-lifecycle correlation is released immediately. Lifecycle metadata/ID remain reserved for a fixed 30s late-response grace; a late response is persisted and may update the session, while grace expiry kills/exits the runtime and releases all correlations.
+- Body is one valid-UTF-8 JSON-RPC 2.0 object, maximum 10MiB. Batch arrays, invalid UTF-8, and `id:null` are invalid. IDs may be strings or bounded JSON numbers; every raw ID token, including quotes/escapes for strings, is at most 128 bytes. String IDs match exactly. Numeric IDs have exponent magnitude at most 1,000,000 and match by an O(token-length) canonical tuple of sign, normalized significant digits, and base-10 exponent without expanding powers of ten; `1`, `1.0`, and `1e0` correlate. Invalid/over-limit IDs are 400. `Runtime.Post` alone compacts the validated object to one line before stdio forwarding. Compaction is whitespace-only stdlib `json.Compact` on the validated raw bytes; decode-and-re-marshal is forbidden because `json.Marshal` HTML-escapes (`<`, `>`, `&`) and normalizes number lexemes (`1e0` → `1`), which would break raw-byte fixtures. Rejecting JSON-RPC batch arrays at the HTTP layer is a deliberate v1-scope decision: ACP v1 defines no batching, and ACP v2 (draft) would require rework.
+- Client request (`method` plus non-null `id`) waits for the matching response and returns 200. Duplicate active or grace-retained IDs on one server return 409. Each runtime permits at most 256 pending plus retained correlations; excess returns 429. Default timeout is 600s via `AGENT_BRIDGE_ACP_REQUEST_TIMEOUT_MS`; timeout returns 504 and the late response remains observable through persisted events and SSE. Non-lifecycle correlation is released immediately. Lifecycle metadata/ID remain reserved for a fixed 30s late-response grace; a late response is persisted and may update the session, while grace expiry kills/exits the runtime and releases all correlations.
 - Client notification (`method`, no `id`) and client response (`id` plus exactly one of `result`/`error`, no `method`) are forwarded and return 202 empty. Client responses complete agent reverse-calls. Requests, notifications, and client responses all use one bounded runtime writer admission queue and the configured request deadline. Timeout before any bytes are written rejects without killing the runtime; timeout/error after a partial JSONL record kills the process group so the stream is never reused.
 - First POST creates the server and requires `?agent=claude|codex|opencode|mock`; omission is 400. A conflicting agent later is 409. `mock` is test-only and omitted from public docs.
 - Unknown server is 404 for GET, DELETE, status, and events. First POST with an agent creates it.
@@ -56,7 +57,7 @@ Deliver `agent-bridge` with client-compatible ACP behavior for Claude Code, Code
 - Subprocesses inherit bridge cwd. ACP session cwd comes from `session/new`, `session/load`, or `session/resume` params and is persisted. Retained session IDs are at most 1024 UTF-8 bytes and cwd values at most 4096 UTF-8 bytes. Over-limit client metadata is rejected with 400 before reservation/write; over-limit agent metadata is omitted from event/session metadata and does not mutate session state, while the valid raw envelope is still persisted as payload.
 - At bridge startup, persisted `creating|idle|busy` rows become `exited` and stale PIDs are cleared. Persisted PIDs are never signaled.
 - Only agent stdout envelopes are persisted. `kind=request` means agent reverse-call; inbound client prompts are not stored.
-- Pending metadata stores only the bounded canonical ID, a fixed lifecycle enum (`none|new|load|resume`), optional bounded session ID, and optional bounded lifecycle cwd; arbitrary method strings are not retained. The bridge inspects JSON-RPC routing fields and `cwd`/`sessionId` on session lifecycle/scoped messages only. A successful `session/new` response supplies the new sessionId and commits it with request cwd in the same event transaction; load/resume correlate request sessionId/cwd. Errors/timeouts do not create session rows, while a late successful response may.
+- Pending metadata stores only the bounded canonical ID, a fixed lifecycle enum (`none|new|load|resume`), an optional bounded request session ID, and an optional bounded cwd; arbitrary method strings are not retained. The bridge inspects `cwd` only on `session/new`, `session/load`, and `session/resume`, and `sessionId` only on the ACP v1 session-scoped methods enumerated in `docs/references/acp-v1-protocol.md` §5 (prompt, cancel, update, request_permission, fs/*, terminal/*, set_mode, set_config_option, close, delete; `elicitation/create` excluded). The request `sessionId` is retained for every session-scoped request so its response event is attributed to the same session as its notifications; an over-limit client `sessionId` is 400. A successful `session/new` response supplies the new sessionId and commits it with request cwd in the same event transaction; load/resume correlate request sessionId/cwd. Errors/timeouts do not create session rows, while a late successful response may.
 - Agent output commits before synchronous delivery or SSE broadcast. SQLite failure kills and marks the server exited, logs the failure, and fails pending requests with 507.
 - Runtime event notification is a capacity-one non-blocking/coalesced wakeup, never an event queue. SQLite is authoritative. SSE subscribes before reading a DB watermark, replays through it, then queries after wakeups or a bounded fallback ticker; dropped wakeups and lag cannot create gaps or duplicates. Consumers must two-value-receive the wakeup channel (`v, ok := <-wake`): `!ok` means the runtime terminated, so they perform one final replay query past the current watermark and stop; an ignored closed-channel `select` case is permanently ready and would busy-loop SQLite.
 - Event retention is intentionally unbounded and prune-on-DELETE only. If needed, operators bound this residual risk with an OS/container volume quota; the bridge adds no retention/pruning subsystem.
@@ -65,7 +66,7 @@ Deliver `agent-bridge` with client-compatible ACP behavior for Claude Code, Code
 
 - `GET /v1/acp` → `{"servers":[{"serverId","agent","status","createdAtMs","updatedAtMs"}]}`, sorted by serverId and including exited servers.
 - `GET /v1/acp/{serverId}/status` → `{serverId,agent,status,createdAtMs,lastEventSeq,sessionIds,pid?,updatedAtMs}`; session IDs sorted, PID omitted unless live.
-- `GET /v1/acp/{serverId}/events?sessionId=&after=&limit=&order=` → `{events:[{seq,kind,method?,payload,sessionId?,createdAtMs}]}`. Path selects server; sessionId optionally filters. `after` is an exclusive integer in `0..math.MaxInt64`, default 0; limit default 100/max 1000; order `asc` default or `desc`; unknown session filter is 404.
+- `GET /v1/acp/{serverId}/events?sessionId=&after=&limit=&order=` → `{events:[{seq,kind,method?,payload,sessionId?,createdAtMs}]}`. Path selects server; sessionId optionally filters. `after` is an exclusive integer in `0..math.MaxInt64`, default 0; limit is an integer in `1..1000`, default 100; order `asc` default or `desc`; unknown session filter is 404.
 - Tables:
   - `servers(server_id PK, agent, status, created_at_ms, updated_at_ms, idle_since_ms, last_event_seq, pid, exited_at_ms)`
   - `server_sessions(server_id, session_id, cwd, created_at_ms, updated_at_ms, PRIMARY KEY(server_id,session_id))`
@@ -97,7 +98,7 @@ Deliver `agent-bridge` with client-compatible ACP behavior for Claude Code, Code
 | `POST /v1/processes/{id}/stop` | SIGTERM process group, wait ≤2s, return snapshot |
 | `POST /v1/processes/{id}/kill` | SIGKILL process group, wait ≤1s, return snapshot |
 | `DELETE /v1/processes/{id}` | 204; running is 409 |
-| `GET /v1/processes/{id}/logs?stream=stdout|stderr|combined&tail=&since=` | 200 `{"entries":[{sequence,stream,timestampMs,data,encoding:"base64"}]}`; since exclusive, then tail by entry count |
+| `GET /v1/processes/{id}/logs?stream=stdout|stderr|combined&tail=&since=` | 200 `{"entries":[{sequence,stream,timestampMs,data,encoding:"base64"}]}`; since exclusive, then stream filter, then tail by entry count |
 | `POST /v1/processes/{id}/input` | `{data,encoding:base64|utf8}` → `{bytesWritten}`; exited is 409 |
 | `POST /v1/processes/run` | `{command,args,cwd?,env{},timeoutMs?,maxOutputBytes?}` → `{exitCode?,timedOut,stdout,stderr,stdoutTruncated,stderrTruncated,durationMs}` |
 | `GET/POST /v1/processes/config` | full object `{maxConcurrentProcesses,defaultRunTimeoutMs,maxRunTimeoutMs,maxOutputBytes,maxLogBytesPerProcess,maxInputBytesPerRequest}` |
@@ -112,7 +113,7 @@ Deliver `agent-bridge` with client-compatible ACP behavior for Claude Code, Code
 | `GET/PUT/DELETE /v1/config/{mcp,skills}?directory=` | JSON object at `{resolved directory}/.agent-bridge/config/{mcp,skills}.json` |
 
 - Processes use pipes/no TTY and independent process groups. Stop, kill, timeout, reaper, and shutdown signal the group. Whenever a managed or one-shot direct child exits, immediately SIGKILL its captured negative PGID before waiting for pumps and only then mark exited/release capacity, so descendants cannot survive the group leader. Logs are base64 8KiB chunks in bridge-observed order; there is no stdin-close endpoint.
-- Process config defaults are 64 concurrent, 30s default/300s max run timeout, 1MiB output, 10MiB logs, and 64KiB decoded input. POST is full replacement. Maxima are 1024 concurrent, 24h timeout fields, 16MiB output, 256MiB logs, and 7MiB decoded input; conversions are checked, all values are positive, and default timeout ≤ max timeout. Lowering concurrency does not kill running processes.
+- Process config defaults are 64 concurrent, 30s default/300s max run timeout, 1MiB output, 10MiB logs, and 64KiB decoded input. Managed processes and one-shot runs share the same concurrency budget; one-shot runs additionally share the aggregate active peak-reservation budget. POST is full replacement. Maxima are 1024 concurrent, 24h timeout fields, 16MiB output, 256MiB logs, and 7MiB decoded input; conversions are checked, all values are positive, and default timeout ≤ max timeout. Lowering concurrency does not kill running processes.
 - Managed logs retain raw chunks and base64-encode only response DTOs. The manager enforces conservative aggregate retained-memory accounting of `cap(rawChunk)+256` bytes per entry, capped at 256MiB across all processes and evicting globally oldest whole entries when the byte budget is exceeded. It also enforces a fixed 512MiB aggregate active one-shot peak reservation; each run reserves 20 times its effective per-stream output cap for two raw captures, worst-case UTF-8 result strings, and JSON escaping/encoder buffering, then releases on every exit path. These are conservative budgets, not exact Go heap guarantees; unavailable capacity returns 409.
 - One-shot output caps apply independently. Invalid UTF-8 is replaced. Timeout defaults to `defaultRunTimeoutMs` and cannot exceed `maxRunTimeoutMs`; output cap defaults to and cannot exceed active `maxOutputBytes`.
 - Snapshots are `{id,command,args,cwd,status,pid?,exitCode?,createdAtMs,exitedAtMs?}` sorted by ID. Request env merges over sanitized inherited env; cwd defaults to bridge cwd.
@@ -122,20 +123,21 @@ Deliver `agent-bridge` with client-compatible ACP behavior for Claude Code, Code
 - Directory listings follow symlinks with `os.Stat`; dangling links and non-file/non-directory entries are skipped. Entry type is `file|dir`; `mode` is permission bits only: `uint32(info.Mode().Perm())`.
 - Upload rejects absolute/escaping names, links/devices, existing symlink components, trailing bytes, and non-EOF archives; compressed and extracted limits are 512MiB; validate/extract in staging before merge.
 - All bridge filesystem/config mutations share one process-local mutation lock. This prevents races among bridge endpoints, but not concurrent external OS actors; because authenticated clients can execute arbitrary commands, the sandbox remains the security boundary and pathname checks are not confinement against such actors.
-- PUT/upload overwrite regular files; existing mkdir succeeds. Move uses `os.Rename` atomic replacement only for compatible types and never pre-deletes the destination; type conflict, non-empty directory replacement, or EXDEV fails without deleting destination. Config PUT and DELETE return 204 empty; writes are atomic mode 0600. Missing GET/DELETE is 404.
+- PUT/upload overwrite regular files; existing mkdir succeeds. Move uses `os.Rename` atomic replacement only for compatible types and never pre-deletes the destination; type conflict, non-empty directory replacement, or EXDEV fails with 409 conflict without deleting destination. Config PUT and DELETE return 204 empty; writes are atomic mode 0600. Missing GET/DELETE is 404.
 - MCP config values are `{command:string,args?:string[],env?:map[string]string}`; skills accepts any JSON object; non-object PUT is 400.
-- Body limits: ACP/JSON 10MiB, process input active limit, FS PUT 512MiB, upload 512MiB compressed/extracted; excess is 413.
+- Body limits: ACP/JSON 10MiB, process input active limit, FS PUT 512MiB, upload 512MiB compressed/extracted; excess is 413. PUT /v1/fs/file and POST /v1/fs/upload-batch are body-oriented and accept any Content-Type; bodies are raw bytes and gzip-compressed tar respectively.
 
 ### Environment, shutdown, and image
 
 - Defaults: `AGENT_BRIDGE_HOST=127.0.0.1`, `AGENT_BRIDGE_PORT=2468`, `AGENT_BRIDGE_LOG_LEVEL=info`, `AGENT_BRIDGE_DB=./agent-bridge.db`, `AGENT_BRIDGE_ALLOW_INSECURE_REMOTE=0`; runtime image sets host `0.0.0.0` and therefore requires a token.
-- `AGENT_BRIDGE_ACP_REQUEST_TIMEOUT_MS` defaults to 120000 and is capped at 1h. `AGENT_BRIDGE_IDLE_TTL_MS` defaults to 900000, allows 0, and is capped at 30d. Parse all numeric values with checked conversion.
+- `AGENT_BRIDGE_ACP_REQUEST_TIMEOUT_MS` defaults to 600000 and is capped at 1h. `AGENT_BRIDGE_IDLE_TTL_MS` defaults to 900000, allows 0, and is capped at 30d. Parse all numeric values with checked conversion.
 - Optional `AGENT_BRIDGE_PID_FILE` is created after startup and removed on clean shutdown.
 - SIGINT/SIGTERM uses one 10s staged budget: stop listener acceptance; run pre-drain hooks that block new activity, stop reapers, close SSE, and kill/wait process groups and pumps; call `http.Server.Shutdown` to drain now-unblocked handlers; post-drain idempotently confirms pumps/commits are complete, checkpoints/closes SQLite, and removes the PID file. Signal-triggered shutdown exits 0 after this bounded best-effort sequence even when cleanup fails or the budget expires; cleanup failures are logged. Cleanup stages receive only the remaining budget and SSE closure never waits behind HTTP drain.
 - Request logs include method, URI, status, latency, and never Authorization.
-- Runtime pins: Claude adapter 0.68.0, Codex adapter 1.3.0, OpenCode 1.18.18, Node 24 slim pinned by digest at implementation.
+- Runtime pins: Claude adapter 0.68.0, Codex adapter 1.3.0, OpenCode 1.18.18, Node 24 slim pinned by digest at implementation (Node 24 leaves active LTS on 2026-10-20; Node 26 LTS follows on 2026-10-28, and a future bump must re-verify the keyless agent matrix).
 - Preserve npm optional dependencies/lifecycle scripts; use committed package/lockfile with `npm ci`; run non-root behind checksum-pinned Tini 0.19.0 with `DISABLE_AUTOUPDATER=1`, `NO_BROWSER=1`. Expected image ≥1GB.
-- Keyless e2e: all initialize; Claude/Codex session creation may return auth-required; OpenCode session creation succeeds and auth may fail at prompt. OpenCode 1.18.18 may omit sessionId from `session/load`.
+- Sandbox deployments must persist agent home directories (`~/.claude`, `~/.codex`, OpenCode state) and the `AGENT_BRIDGE_DB` parent across restarts for resume; Phase 06 Task 6.10 documents the required mounts.
+- Keyless e2e: all initialize; Claude `session/new` succeeds and auth fails at `session/prompt` with `-32000`; Codex auth failures surface in-band (`session/new` may return auth-required); OpenCode session creation succeeds and auth may fail at prompt. OpenCode 1.18.18 may omit sessionId from `session/load`.
 
 ## Reference Implementation
 
@@ -147,6 +149,19 @@ Rust source of truth: `/home/viethoangcr/Workspace/github/rivet/sandbox-agent`.
 - `server/packages/sandbox-agent/src/process_runtime.rs`: process limits and behavior.
 
 The Go port replaces Rust in-memory state with SQLite and adds status/events endpoints. It is a compatible superset, not internal parity.
+
+### Compatibility deltas vs the Rust reference
+
+Intentional supersets and deviations, listed so they are not mistaken for bugs:
+
+| Delta | Rationale |
+|---|---|
+| 405 responses are RFC 9457 problem+json with `Allow` (Rust: empty body) | Uniform error contract |
+| Events are durable SQLite rows with prune-on-DELETE retention (Rust: 1024-entry in-memory ring) | Replay survives restarts |
+| Managed processes and one-shot runs share one concurrency budget (Rust: separate) | Conservative resource admission |
+| Lifecycle requests get a 30s late-response grace whose expiry kills the runtime (Rust: timeout drops the correlation only) | Bounded, durable session correctness |
+| Status and events endpoints plus a richer private mock | New Go-only surface |
+| Default ACP request timeout 600s (Rust: 120s) | Real prompt turns exceed two minutes |
 
 ## Target Architecture
 
@@ -162,7 +177,7 @@ flowchart LR
 
 ## Implementation Plans
 
-Execute in numeric order except phases 04 and 05 may implement their isolated packages after phase 01 in parallel with phases 02-03. Phase 06 begins with an explicit integration task that owns the final `httpapi.Dependencies`, `internal/app` construction, route composition, and staged cleanup order before image work.
+Execute in numeric order except phases 04 and 05 may implement their isolated packages (04 Tasks 4.1-4.6; 05 Tasks 5.1-5.4 and 5.6) after phase 01 in parallel with phases 02-03. Tasks that extend shared `httpapi.Dependencies`, `internal/httpapi/server.go`, or `internal/app/app.go` (04 Tasks 4.7-4.9; 05 Tasks 5.5 and 5.7) require Phase 03 completion. Phase 06 begins with an explicit integration task that owns the final `httpapi.Dependencies`, `internal/app` construction, route composition, and staged cleanup order before image work.
 
 1. [Phase 01: Scaffolding and server foundation](20260823-01-scaffolding.md)
 2. [Phase 02: ACP persistence and stdio runtime](20260823-02-acp-persistence-runtime.md)
@@ -173,7 +188,6 @@ Execute in numeric order except phases 04 and 05 may implement their isolated pa
 
 ## Open Questions
 
-- Confirm sandbox storage persists agent home directories and `AGENT_BRIDGE_DB` for the required resume lifetime.
 - Live authenticated real-agent prompt/resume E2E remains deferred until CI provides isolated test credentials. Phase 06 retains pinned keyless Docker coverage and focused raw-byte runtime fixtures without adding a recorder, transcript corpus, replay harness, or mock-conformance layer.
 
 ## Testing Conventions
