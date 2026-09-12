@@ -15,9 +15,11 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/viethoangcr/agent-bridge/internal/acpstore"
 	"github.com/viethoangcr/agent-bridge/internal/config"
 	"github.com/viethoangcr/agent-bridge/internal/httpapi"
 	"github.com/viethoangcr/agent-bridge/internal/lifecycle"
+	"github.com/viethoangcr/agent-bridge/internal/mockagent"
 )
 
 // IO is the process input/output surface supplied by the command entrypoint.
@@ -39,10 +41,6 @@ const (
 	readHeaderTimeout = 10 * time.Second
 	idleTimeout       = 60 * time.Second
 )
-
-// errMockAgentUnimplemented is the temporary phase boundary returned by the
-// private mock dispatch until Phase 02 implements the JSONL loop.
-var errMockAgentUnimplemented = errors.New("internal mock agent is not implemented")
 
 // httpShutdowner is the subset of *http.Server the staged shutdown uses. It
 // lets tests inject a fake that observes stage ordering and budget expiry.
@@ -67,14 +65,28 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error {
 
 	logger := slog.New(slog.NewJSONHandler(io.Stderr, &slog.HandlerOptions{Level: cfg.LogLevel}))
 
+	// Open and reconcile durable state before the listener becomes ready so
+	// health never serves pre-reconciliation statuses. Every startup failure
+	// after opening closes the store before returning.
+	store, err := acpstore.Open(ctx, cfg.DBPath)
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	if err := store.Reconcile(ctx); err != nil {
+		closeStore(ctx, logger, store)
+		return fmt.Errorf("reconciling database: %w", err)
+	}
+
 	listener, err := net.Listen("tcp", cfg.Address())
 	if err != nil {
+		closeStore(ctx, logger, store)
 		return fmt.Errorf("listening on %s: %w", cfg.Address(), err)
 	}
 
 	if cfg.PIDFile != "" {
 		if err := writePIDFile(cfg.PIDFile); err != nil {
 			_ = listener.Close()
+			closeStore(ctx, logger, store)
 			return fmt.Errorf("writing pid file: %w", err)
 		}
 	}
@@ -88,20 +100,38 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error {
 
 	pre := &lifecycle.Registry{}
 	post := &lifecycle.Registry{}
+	if err := post.Add("database", store.Close); err != nil {
+		_ = listener.Close()
+		closeStore(ctx, logger, store)
+		return fmt.Errorf("registering database cleanup: %w", err)
+	}
 
-	return serve(ctx, listener, srv, pre, post, logger, cfg.PIDFile)
+	if err := serve(ctx, listener, srv, pre, post, logger, cfg.PIDFile); err != nil {
+		return err
+	}
+	return nil
 }
 
-// runInternalMockAgent is the Phase 01 boundary for the private mock agent. The
-// JSONL loop arrives in Phase 02; until then it fails instead of silently
-// starting the HTTP server.
-func runInternalMockAgent(context.Context, IO) error {
-	return errMockAgentUnimplemented
+// closeStore closes the application database after a startup failure. Cleanup
+// errors are logged rather than masking the original failure.
+func closeStore(ctx context.Context, logger *slog.Logger, store *acpstore.Store) {
+	if err := store.Close(context.WithoutCancel(ctx)); err != nil {
+		logger.Error("closing database", "error", err)
+	}
+}
+
+// runInternalMockAgent runs the private mock agent JSONL loop in place of the
+// HTTP server. It never loads HTTP configuration, binds a listener, or creates
+// a PID file or database.
+func runInternalMockAgent(ctx context.Context, io IO) error {
+	return mockagent.Run(ctx, io.Stdin, io.Stdout, io.Stderr)
 }
 
 // serve runs the HTTP server until ctx is canceled or Serve fails for a reason
-// other than the expected shutdown close. Cancellation runs the staged drain
-// and always returns nil after bounded best effort.
+// other than the expected shutdown close. Cancellation runs the staged drain,
+// and an unexpected Serve failure runs the same post-drain cleanup, in both
+// cases always closing the store before removing the PID file. It returns nil
+// after bounded best effort; only an unexpected Serve failure is surfaced.
 func serve(ctx context.Context, ln net.Listener, srv *http.Server, pre, post *lifecycle.Registry, logger *slog.Logger, pidFile string) error {
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.Serve(ln) }()
@@ -109,7 +139,7 @@ func serve(ctx context.Context, ln net.Listener, srv *http.Server, pre, post *li
 	select {
 	case err := <-serveErr:
 		_ = ln.Close()
-		removePIDFileLogged(logger, pidFile)
+		closePostAndRemovePID(context.WithoutCancel(ctx), post, logger, time.Now().Add(shutdownGrace), pidFile)
 		if err != nil && !isNormalClose(err) {
 			return fmt.Errorf("http server: %w", err)
 		}
@@ -119,6 +149,20 @@ func serve(ctx context.Context, ln net.Listener, srv *http.Server, pre, post *li
 
 	drain(ctx, ln, srv, pre, post, logger, pidFile)
 	return nil
+}
+
+// closePostAndRemovePID runs the post-drain registry (which checkpoint-closes
+// the database) under deadline and removes the PID file only after it
+// completes. The cancellation drain and the unexpected serve-error path both
+// funnel through it, so the PID file can never outlive the store.
+func closePostAndRemovePID(parent context.Context, post *lifecycle.Registry, logger *slog.Logger, deadline time.Time, pidFile string) {
+	postCtx, cancelPost := context.WithDeadline(parent, deadline)
+	postErr := post.Shutdown(postCtx)
+	cancelPost()
+	if postErr != nil {
+		logger.Error("post-drain cleanup", "error", postErr)
+	}
+	removePIDFileLogged(logger, pidFile)
 }
 
 // drain performs the cancellation-driven staged shutdown against one absolute
@@ -159,16 +203,9 @@ func drain(ctx context.Context, ln io.Closer, srv httpShutdowner, pre, post *lif
 		}
 	}
 
-	// 4. Post-drain: confirm completion, commit non-process work, close DB.
-	postCtx, cancelPost := context.WithDeadline(parent, deadline)
-	postErr := post.Shutdown(postCtx)
-	cancelPost()
-	if postErr != nil {
-		logger.Error("post-drain cleanup", "error", postErr)
-	}
-
+	// 4. Post-drain: confirm completion, commit non-process work, close the DB.
 	// 5. The PID file goes last.
-	removePIDFileLogged(logger, pidFile)
+	closePostAndRemovePID(parent, post, logger, deadline, pidFile)
 }
 
 // writePIDFile creates path exclusively with mode 0600 and writes the decimal

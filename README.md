@@ -4,12 +4,14 @@
 remote HTTP/SSE clients and pre-provisioned coding-agent subprocesses, and
 exposes process, filesystem, and per-project config APIs.
 
-> **Status: Phase 01 (scaffolding and server foundation) is complete.** The
-> binary currently provides validated environment configuration, a public
-> `GET /` root, an authenticated `GET /v1/health`, bearer-token authentication,
-> structured request logging, and PID-file plus graceful-shutdown lifecycle.
-> ACP endpoints, managed processes, the filesystem API, and SQLite persistence
-> belong to later phases and are **not available yet**.
+> **Status: Phases 01-02 are complete.** The binary provides validated
+> environment configuration, a public `GET /` root, an authenticated
+> `GET /v1/health`, bearer-token authentication, structured request logging,
+> PID-file plus graceful-shutdown lifecycle, and internal SQLite persistence
+> with the private stdio ACP runtime (reconciliation on startup, checkpoint on
+> shutdown, redacted stderr, strict private mock agent). ACP HTTP endpoints,
+> managed processes, and the filesystem API belong to later phases and are
+> **not available yet**; no public API changed in Phase 02.
 
 The authoritative contract is
 [`docs/plans/20260815-agent-bridge.md`](docs/plans/20260815-agent-bridge.md).
