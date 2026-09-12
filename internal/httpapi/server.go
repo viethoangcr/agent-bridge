@@ -13,8 +13,9 @@ import (
 	"github.com/viethoangcr/agent-bridge/internal/projectconfig"
 )
 
-// rootDocsURL is the stable documentation location served by the root endpoint
-// until Phase 06 finalizes public documentation.
+// rootDocsURL is the final public documentation location served by the root
+// endpoint. It is the repository README anchor asserted by the documentation
+// checklist test.
 const rootDocsURL = "https://github.com/viethoangcr/agent-bridge#readme"
 
 // fallbackPattern is the methodless root pattern that owns 404/405 responses.

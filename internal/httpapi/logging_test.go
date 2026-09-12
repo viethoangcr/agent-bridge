@@ -191,6 +191,48 @@ func TestRequestLoggerPreservesFlusher(t *testing.T) {
 	_ = onlyLogRecord(t, &buf)
 }
 
+func TestRequestLoggerServerWiringNeverLogsToken(t *testing.T) {
+	const token = "distinctive-wiring-token-9c4e"
+
+	var buf bytes.Buffer
+	server := NewServer(Dependencies{Token: token, Log: newTestLogger(&buf)})
+
+	// One rejected and one accepted request through the real middleware chain.
+	rejected := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rejected, httptest.NewRequest(http.MethodGet, "/v1/health", nil))
+	if rejected.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status = %d, want %d", rejected.Code, http.StatusUnauthorized)
+	}
+	accepted := httptest.NewRequest(http.MethodGet, "/v1/health", nil)
+	accepted.Header.Set("Authorization", "Bearer "+token)
+	server.Handler().ServeHTTP(httptest.NewRecorder(), accepted)
+
+	payload := buf.String()
+	if strings.Contains(payload, token) {
+		t.Fatalf("request log leaked the configured token: %s", payload)
+	}
+	if strings.Contains(payload, "Authorization") {
+		t.Fatalf("request log leaked the Authorization header: %s", payload)
+	}
+
+	records := logRecords(t, &buf)
+	if len(records) != 2 {
+		t.Fatalf("log records = %d, want 2 (%q)", len(records), payload)
+	}
+	for _, entry := range records {
+		if got := entry["method"]; got != http.MethodGet {
+			t.Errorf("method = %v, want %q", got, http.MethodGet)
+		}
+		if _, ok := entry["uri"].(string); !ok {
+			t.Errorf("uri = %v, want a string", entry["uri"])
+		}
+		if _, ok := entry["status"].(float64); !ok {
+			t.Errorf("status = %v, want a number", entry["status"])
+		}
+		assertLatencyMs(t, entry)
+	}
+}
+
 func TestRequestLoggerServerWiring(t *testing.T) {
 	const token = "wiring-token"
 

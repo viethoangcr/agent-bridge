@@ -225,6 +225,81 @@ func TestAuthenticate(t *testing.T) {
 	}
 }
 
+// TestEveryV1RouteRequiresAuth proves the middleware guards every registered
+// /v1 subtree route, including health, before any handler runs. Every route
+// must answer an unauthenticated request with the RFC 9457 401 and must not
+// answer a correctly authenticated request as unauthorized; the handler's own
+// downstream status (503 without injected services, 404, 405, ...) is
+// irrelevant here because this asserts the auth boundary, not route behavior.
+func TestEveryV1RouteRequiresAuth(t *testing.T) {
+	const token = "every-route-token"
+
+	routes := []struct {
+		method string
+		target string
+	}{
+		{http.MethodGet, "/v1/health"},
+		{http.MethodGet, "/v1/acp"},
+		{http.MethodPost, "/v1/acp/demo?agent=mock"},
+		{http.MethodPost, "/v1/acp/"},
+		{http.MethodGet, "/v1/acp/demo"},
+		{http.MethodDelete, "/v1/acp/demo"},
+		{http.MethodGet, "/v1/acp/demo/status"},
+		{http.MethodGet, "/v1/acp/demo/events"},
+		{http.MethodGet, "/v1/processes/config"},
+		{http.MethodPost, "/v1/processes/config"},
+		{http.MethodGet, "/v1/processes/run"},
+		{http.MethodDelete, "/v1/processes/run"},
+		{http.MethodPost, "/v1/processes/run"},
+		{http.MethodPost, "/v1/processes"},
+		{http.MethodGet, "/v1/processes"},
+		{http.MethodGet, "/v1/processes/demo"},
+		{http.MethodPost, "/v1/processes/demo/stop"},
+		{http.MethodPost, "/v1/processes/demo/kill"},
+		{http.MethodDelete, "/v1/processes/demo"},
+		{http.MethodGet, "/v1/processes/demo/logs"},
+		{http.MethodPost, "/v1/processes/demo/input"},
+		{http.MethodGet, "/v1/fs/entries"},
+		{http.MethodGet, "/v1/fs/file"},
+		{http.MethodPut, "/v1/fs/file"},
+		{http.MethodDelete, "/v1/fs/entry"},
+		{http.MethodPost, "/v1/fs/mkdir"},
+		{http.MethodPost, "/v1/fs/move"},
+		{http.MethodGet, "/v1/fs/stat"},
+		{http.MethodPost, "/v1/fs/upload-batch"},
+		{http.MethodGet, "/v1/config/mcp"},
+		{http.MethodPut, "/v1/config/mcp"},
+		{http.MethodDelete, "/v1/config/mcp"},
+		{http.MethodGet, "/v1/config/skills"},
+		{http.MethodPut, "/v1/config/skills"},
+		{http.MethodDelete, "/v1/config/skills"},
+		{http.MethodGet, "/v1/unknown"},
+	}
+
+	server := NewServer(Dependencies{Token: token})
+	for _, route := range routes {
+		t.Run(route.method+" "+route.target, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rec, httptest.NewRequest(route.method, route.target, nil))
+
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("unauthenticated status = %d, want %d (body %q)", rec.Code, http.StatusUnauthorized, rec.Body.String())
+			}
+			if got := rec.Result().Header.Get("Content-Type"); !strings.HasPrefix(got, "application/problem+json") {
+				t.Errorf("Content-Type = %q, want application/problem+json", got)
+			}
+
+			authed := httptest.NewRequest(route.method, route.target, nil)
+			authed.Header.Set("Authorization", "Bearer "+token)
+			authedRec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(authedRec, authed)
+			if authedRec.Code == http.StatusUnauthorized {
+				t.Errorf("authenticated request rejected as unauthorized (body %q)", authedRec.Body.String())
+			}
+		})
+	}
+}
+
 func TestAuthenticateBearerToken(t *testing.T) {
 	cases := []struct {
 		name   string

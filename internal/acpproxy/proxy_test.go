@@ -719,6 +719,53 @@ func TestProxyConcurrentFirstPostsWaitOnCreatingPlaceholder(t *testing.T) {
 	}
 }
 
+// TestProxyWaiterRechecksAgentAfterCreationPublishes proves a waiter for a
+// different agent than the in-flight creation is not dispatched to the
+// published instance: it must observe ErrAgentConflict, exactly as if it had
+// arrived after creation completed.
+func TestProxyWaiterRechecksAgentAfterCreationPublishes(t *testing.T) {
+	f := newTestFactory(t)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var enteredOnce sync.Once
+	f.setOnCreate(func(_ context.Context, _ *acpstore.Store, _ string, _ acpruntime.LaunchSpec) error {
+		enteredOnce.Do(func() { close(entered) })
+		<-release
+		return nil
+	})
+	p, _ := newProxyForTest(t, f)
+	ctx := t.Context()
+	id := "waiter-agent-conflict"
+	alpha, beta := "alpha", "beta"
+
+	creatorDone := make(chan error, 1)
+	go func() {
+		_, err := p.Post(ctx, id, &alpha, "initialize", initPayload)
+		creatorDone <- err
+	}()
+	awaitSignal(t, entered, "creation start")
+
+	waiterArrived := make(chan struct{}, 1)
+	p.beforeCreateWait = func() { waiterArrived <- struct{}{} }
+	waiterDone := make(chan error, 1)
+	go func() {
+		_, err := p.Post(ctx, id, &beta, "initialize", initPayload)
+		waiterDone <- err
+	}()
+	awaitSignal(t, waiterArrived, "conflicting waiter arrival")
+
+	close(release)
+	if err := <-creatorDone; err != nil {
+		t.Fatalf("creator: %v", err)
+	}
+	if err := <-waiterDone; !errors.Is(err, ErrAgentConflict) {
+		t.Fatalf("waiter error = %v, want ErrAgentConflict", err)
+	}
+	if got := f.spawnCount(); got != 1 {
+		t.Fatalf("spawns = %d, want 1 (waiter must not spawn its own runtime)", got)
+	}
+}
+
 // TestProxySpawnFailureRollsBackPlaceholder proves a failed spawn removes the
 // placeholder, releases its capacity slot, records the error for waiters, and
 // leaves no live instance or duplicate spawn behind.
@@ -825,12 +872,15 @@ func TestProxyDeleteWaitsForCreatingPlaceholder(t *testing.T) {
 	}()
 	awaitSignal(t, entered, "creation start")
 
+	deleteMarked := make(chan struct{})
+	p.afterDeleteMark = func() { close(deleteMarked) }
 	deleted := make(chan error, 1)
 	go func() { deleted <- p.Delete(ctx, id) }()
+	awaitSignal(t, deleteMarked, "delete mark")
 	close(release)
 
-	if err := <-created; err != nil && !errors.Is(err, ErrDeleting) {
-		t.Fatalf("creation during delete = %v, want success or ErrDeleting", err)
+	if err := <-created; !errors.Is(err, ErrDeleting) {
+		t.Fatalf("creation during delete = %v, want ErrDeleting", err)
 	}
 	if err := <-deleted; err != nil {
 		t.Fatalf("Delete: %v", err)

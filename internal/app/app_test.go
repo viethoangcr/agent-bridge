@@ -220,13 +220,24 @@ func (c *fakeCloser) Close() error {
 	return nil
 }
 
+// Accept and Addr make fakeCloser a net.Listener so it can stand in for a
+// listener whose Serve is driven by an injected fake server.
+func (c *fakeCloser) Accept() (net.Conn, error) { return nil, errors.New("fake listener") }
+
+func (c *fakeCloser) Addr() net.Addr { return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)} }
+
 type fakeShutdowner struct {
 	rec          *eventRecorder
 	onShutdown   func(context.Context)
 	streamClosed func() bool
 	block        bool
+	serveErr     error
 	closeCalled  atomic.Bool
 }
+
+// Serve returns the configured acceptance error so serve's unexpected-error
+// path can be driven without a real listener.
+func (s *fakeShutdowner) Serve(net.Listener) error { return s.serveErr }
 
 func (s *fakeShutdowner) Shutdown(ctx context.Context) error {
 	s.rec.add("shutdown")

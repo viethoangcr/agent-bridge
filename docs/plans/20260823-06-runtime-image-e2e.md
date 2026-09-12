@@ -149,17 +149,17 @@ func initialize(t *testing.T, c *container, serverID, agent string) rpcEnvelope
 
 **RED:**
 
-- [ ] Add an app-level integration test with minimal fake services and behavioral assertions that every Phase 02-05 route is reachable through the single `httpapi.Server`, receives the intended dependency, and shares auth/logging middleware.
-- [ ] Add channel-driven lifecycle assertions proving exact order: stop listener acceptance; pre-drain closes SSE, stops reapers, and signal-and-wait terminates ACP/managed groups through process reap and pump completion; `http.Server.Shutdown` waits now-unblocked handlers; post-drain idempotently confirms process/pump completion, waits any non-process commit work, and checkpoints/closes DB; PID removal is last.
-- [ ] Assert an open SSE handler cannot block shutdown because its pre-drain closure occurs before `http.Server.Shutdown`. Inject the absolute deadline and verify all stage contexts share one ten-second deadline and retain only remaining time.
-- [ ] Run focused app/httpapi integration tests and retain failing route/dependency/order assertions. Compilation conflicts or missing symbols may be recorded as setup evidence but do not replace behavioral RED.
+- [x] Add an app-level integration test with minimal fake services and behavioral assertions that every Phase 02-05 route is reachable through the single `httpapi.Server`, receives the intended dependency, and shares auth/logging middleware.
+- [x] Add channel-driven lifecycle assertions proving exact order: stop listener acceptance; pre-drain closes SSE, stops reapers, and signal-and-wait terminates ACP/managed groups through process reap and pump completion; `http.Server.Shutdown` waits now-unblocked handlers; post-drain idempotently confirms process/pump completion, waits any non-process commit work, and checkpoints/closes DB; PID removal is last.
+- [x] Assert an open SSE handler cannot block shutdown because its pre-drain closure occurs before `http.Server.Shutdown`. Inject the absolute deadline and verify all stage contexts share one ten-second deadline and retain only remaining time.
+- [x] Run focused app/httpapi integration tests and retain failing route/dependency/order assertions. Compilation conflicts or missing symbols may be recorded as setup evidence but do not replace behavioral RED.
 
 **GREEN:**
 
-- [ ] Finalize `httpapi.Dependencies` as references to already-constructed services/handlers only. Keep all concrete store, runtime, process supervisor, reaper, and lifecycle construction in `internal/app`.
-- [ ] Compose one route table from Phases 02-05 and remove duplicate phase-local assembly paths only where integration proves they conflict; do not add an alternate router or service locator.
-- [ ] Register explicit pre-drain signal-and-wait process/pump termination and post-drain idempotent confirmation/non-process commit/DB cleanup ownership. Continue best-effort within one absolute ten-second deadline, passing fresh non-canceled contexts with that same deadline to each stage and logging joined bounded errors without changing signal-triggered exit 0.
-- [ ] Resolve integration conflicts before Docker work, then run full unit/race tests with injected clocks and small limits rather than repeated real-duration waits.
+- [x] Finalize `httpapi.Dependencies` as references to already-constructed services/handlers only. Keep all concrete store, runtime, process supervisor, reaper, and lifecycle construction in `internal/app`.
+- [x] Compose one route table from Phases 02-05 and remove duplicate phase-local assembly paths only where integration proves they conflict; do not add an alternate router or service locator.
+- [x] Register explicit pre-drain signal-and-wait process/pump termination and post-drain idempotent confirmation/non-process commit/DB cleanup ownership. Continue best-effort within one absolute ten-second deadline, passing fresh non-canceled contexts with that same deadline to each stage and logging joined bounded errors without changing signal-triggered exit 0.
+- [x] Resolve integration conflicts before Docker work, then run full unit/race tests with injected clocks and small limits rather than repeated real-duration waits.
 
 **Verify:** `go test -race ./internal/app ./internal/httpapi -count=1 && go test ./... -count=1`
 
@@ -175,15 +175,15 @@ func initialize(t *testing.T, c *container, serverID, agent string) rpcEnvelope
 
 **RED:**
 
-- [ ] Confirm with `npm view <package>@<version> version bin --json` that each exact package/version exists and exposes the required binary; stop and update the explicit assumption rather than silently substituting.
-- [ ] Add a small manifest/lock contract check, seed a deliberately incomplete fixture if the real files do not yet exist, and retain behavioral failures for missing exact versions, bin mappings, integrity, or optional-package lock entries. Missing production files are setup evidence only.
+- [x] Confirm with `npm view <package>@<version> version bin --json` that each exact package/version exists and exposes the required binary; stop and update the explicit assumption rather than silently substituting.
+- [x] Add a small manifest/lock contract check, seed a deliberately incomplete fixture if the real files do not yet exist, and retain behavioral failures for missing exact versions, bin mappings, integrity, or optional-package lock entries. Missing production files are setup evidence only.
 
 **GREEN:**
 
-- [ ] Write the minimal private manifest with exact versions and run `npm install --package-lock-only --ignore-scripts=false --include=optional --prefix docker/runtime` using the Node/npm version from the pinned Node 24 image.
-- [ ] Inspect the lock for exact top-level versions, integrity hashes, optional platform packages, and lifecycle metadata.
-- [ ] Run a clean `npm ci --prefix docker/runtime` without suppressing scripts/optional dependencies, verify `docker/runtime/node_modules/.bin/claude-agent-acp`, `codex-acp`, and `opencode`, then remove untracked `node_modules` without changing `.gitignore`.
-- [ ] Ensure `git diff --check -- docker/runtime/package.json docker/runtime/package-lock.json` passes.
+- [x] Write the minimal private manifest with exact versions and run `npm install --package-lock-only --ignore-scripts=false --include=optional --prefix docker/runtime` using the Node/npm version from the pinned Node 24 image.
+- [x] Inspect the lock for exact top-level versions, integrity hashes, optional platform packages, and lifecycle metadata.
+- [x] Run a clean `npm ci --prefix docker/runtime` without suppressing scripts/optional dependencies, verify `docker/runtime/node_modules/.bin/claude-agent-acp`, `codex-acp`, and `opencode`, then remove untracked `node_modules` without changing `.gitignore`.
+- [x] Ensure `git diff --check -- docker/runtime/package.json docker/runtime/package-lock.json` passes.
 
 **Verify:** `npm ci --prefix docker/runtime --dry-run --include=optional`
 
@@ -199,20 +199,20 @@ func initialize(t *testing.T, c *container, serverID, agent string) rpcEnvelope
 
 **RED:**
 
-- [ ] Add behavioral Dockerfile contract assertions against a minimal fixture for digest-pinned bases, target args, per-architecture Tini 0.19.0 SHA-256 pins, non-root user, token-safe host defaults, and the `tini -- agent-bridge` entrypoint; retain assertion failures rather than treating a missing Dockerfile as RED.
-- [ ] Resolve current multi-platform manifest digests for the exact `golang:1.26.8-bookworm` builder and Node 24 bookworm-slim runtime images with `docker buildx imagetools inspect`; record architecture support.
-- [ ] Run the planned host build command and retain the expected failure before Dockerfile creation.
+- [x] Add behavioral Dockerfile contract assertions against a minimal fixture for digest-pinned bases, target args, per-architecture Tini 0.19.0 SHA-256 pins, non-root user, token-safe host defaults, and the `tini -- agent-bridge` entrypoint; retain assertion failures rather than treating a missing Dockerfile as RED.
+- [x] Resolve current multi-platform manifest digests for the exact `golang:1.26.8-bookworm` builder and Node 24 bookworm-slim runtime images with `docker buildx imagetools inspect`; record architecture support.
+- [x] Run the planned host build command and retain the expected failure before Dockerfile creation.
 
 **GREEN:**
 
-- [ ] Use `FROM --platform=$BUILDPLATFORM golang:1.26.8-bookworm@sha256:<digest>` (exact tag matching the go.mod patch pin, never a floating `golang:1.26` or `1.26.8` without digest) and compile with `CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags='-s -w' -o /out/agent-bridge ./cmd/agent-bridge`.
-- [ ] Add a disposable target-aware `binary-verify` tooling stage that uses `file`/`readelf` (or equivalent pinned tooling) to reject the wrong ELF architecture, a dynamic interpreter, or `NEEDED` entries. Copy only the verified binary onward; do not retain these tools in runtime.
-- [ ] Cache Go module/build directories with BuildKit mounts while copying `go.mod`/`go.sum` before source for stable layers.
-- [ ] In the digest-pinned Node 24 `agent-deps` stage, set `WORKDIR /opt/agents`, copy `docker/runtime/package.json` and `docker/runtime/package-lock.json` there, and run `npm ci --include=optional`. This makes the committed lock resolve directly to `/opt/agents/node_modules`, matching runtime PATH. Do not use `npm install -g`, `--ignore-scripts`, or runtime installs.
-- [ ] In a digest-pinned build stage, map `TARGETARCH` to the official Tini 0.19.0 static amd64/arm64 release asset, pin each asset's SHA-256 in the Dockerfile, verify it with `sha256sum -c`, and copy only the verified binary to `/usr/bin/tini`; do not install Tini from mutable apt repositories. Use the digest-pinned target-platform Node 24 bookworm-slim runtime stage and remove any package-manager lists in the layer that installs other required exact-version OS packages.
-- [ ] Create fixed UID/GID `10001`, copy `/opt/agents` and `/usr/local/bin/agent-bridge` as root, then switch permanently to that user and `/home/agentbridge`.
-- [ ] Set the required environment, `EXPOSE 2468`, and `ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/agent-bridge"]`. Do not bake a token, default the unsafe remote override, or add a healthcheck that cannot authenticate; operators must supply `AGENT_BRIDGE_TOKEN` because the image host is `0.0.0.0`.
-- [ ] Keep `docker/runtime/Dockerfile.dockerignore` minimal: VCS metadata, local binaries, DB/WAL/PID files, all `node_modules`, and test output only; do not exclude source needed by the root-context build.
+- [x] Use `FROM --platform=$BUILDPLATFORM golang:1.26.8-bookworm@sha256:<digest>` (exact tag matching the go.mod patch pin, never a floating `golang:1.26` or `1.26.8` without digest) and compile with `CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags='-s -w' -o /out/agent-bridge ./cmd/agent-bridge`.
+- [x] Add a disposable target-aware `binary-verify` tooling stage that uses `file`/`readelf` (or equivalent pinned tooling) to reject the wrong ELF architecture, a dynamic interpreter, or `NEEDED` entries. Copy only the verified binary onward; do not retain these tools in runtime.
+- [x] Cache Go module/build directories with BuildKit mounts while copying `go.mod`/`go.sum` before source for stable layers.
+- [x] In the digest-pinned Node 24 `agent-deps` stage, set `WORKDIR /opt/agents`, copy `docker/runtime/package.json` and `docker/runtime/package-lock.json` there, and run `npm ci --include=optional`. This makes the committed lock resolve directly to `/opt/agents/node_modules`, matching runtime PATH. Do not use `npm install -g`, `--ignore-scripts`, or runtime installs.
+- [x] In a digest-pinned build stage, map `TARGETARCH` to the official Tini 0.19.0 static amd64/arm64 release asset, pin each asset's SHA-256 in the Dockerfile, verify it with `sha256sum -c`, and copy only the verified binary to `/usr/bin/tini`; do not install Tini from mutable apt repositories. Use the digest-pinned target-platform Node 24 bookworm-slim runtime stage and remove any package-manager lists in the layer that installs other required exact-version OS packages.
+- [x] Create fixed UID/GID `10001`, copy `/opt/agents` and `/usr/local/bin/agent-bridge` as root, then switch permanently to that user and `/home/agentbridge`.
+- [x] Set the required environment, `EXPOSE 2468`, and `ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/agent-bridge"]`. Do not bake a token, default the unsafe remote override, or add a healthcheck that cannot authenticate; operators must supply `AGENT_BRIDGE_TOKEN` because the image host is `0.0.0.0`.
+- [x] Keep `docker/runtime/Dockerfile.dockerignore` minimal: VCS metadata, local binaries, DB/WAL/PID files, all `node_modules`, and test output only; do not exclude source needed by the root-context build.
 
 **Verify:**
 
@@ -234,17 +234,17 @@ scripts/verify-agents.sh --image agent-bridge:e2e
 
 **RED:**
 
-- [ ] Run a minimal script seam against fixtures/mutated image layers with one missing command, one mismatched package version, a root user, writable dependencies, and a wrong PID-1 entrypoint; each behavioral assertion must fail non-zero with the offending component named. A missing script is setup evidence only.
-- [ ] Separately feed a dynamically linked or wrong-architecture fake bridge to the `binary-verify` stage/host inspection and retain that behavioral failure.
+- [x] Run a minimal script seam against fixtures/mutated image layers with one missing command, one mismatched package version, a root user, writable dependencies, and a wrong PID-1 entrypoint; each behavioral assertion must fail non-zero with the offending component named. A missing script is setup evidence only.
+- [x] Separately feed a dynamically linked or wrong-architecture fake bridge to the `binary-verify` stage/host inspection and retain that behavioral failure.
 
 **GREEN:**
 
-- [ ] Use `set -eu`, `command -v`, and Node to read installed package JSON exactly; do not parse human-oriented npm output.
-- [ ] Check agent versions equal 0.68.0, 1.3.0, and 1.18.18, resolved commands remain below `/opt/agents/node_modules/.bin`, and `/usr/bin/tini --version` reports 0.19.0; the Docker build's SHA-256 check owns binary identity.
-- [ ] Use bounded non-interactive version/help invocations. Probe `opencode acp` with an explicit timeout, terminate and reap it on timeout/success, and reject browser-launch output; no verification command may leave the bridge or an agent server running.
-- [ ] With runtime tools, verify `agent-bridge` is executable; do not invoke `file`, `readelf`, `ldd`, or assume those tools exist in the final image. Let the already-required tooling stage/host inspection own architecture and static-link assertions.
-- [ ] For `--image`, inspect/run the image and fail if UID is 0, HOME is wrong, `/opt/agents` is writable, required environment is absent, or the entrypoint is not pinned `tini -- agent-bridge`.
-- [ ] Run the local verification in the Docker build so a broken package layout cannot produce the final stage.
+- [x] Use `set -eu`, `command -v`, and Node to read installed package JSON exactly; do not parse human-oriented npm output.
+- [x] Check agent versions equal 0.68.0, 1.3.0, and 1.18.18, resolved commands remain below `/opt/agents/node_modules/.bin`, and `/usr/bin/tini --version` reports 0.19.0; the Docker build's SHA-256 check owns binary identity.
+- [x] Use bounded non-interactive version/help invocations. Probe `opencode acp` with an explicit timeout, terminate and reap it on timeout/success, and reject browser-launch output; no verification command may leave the bridge or an agent server running.
+- [x] With runtime tools, verify `agent-bridge` is executable; do not invoke `file`, `readelf`, `ldd`, or assume those tools exist in the final image. Let the already-required tooling stage/host inspection own architecture and static-link assertions.
+- [x] For `--image`, inspect/run the image and fail if UID is 0, HOME is wrong, `/opt/agents` is writable, required environment is absent, or the entrypoint is not pinned `tini -- agent-bridge`.
+- [x] Run the local verification in the Docker build so a broken package layout cannot produce the final stage.
 
 **Verify:** `scripts/verify-agents.sh --image agent-bridge:e2e`
 
@@ -260,22 +260,22 @@ scripts/verify-agents.sh --image agent-bridge:e2e
 
 **RED:**
 
-- [ ] Implement harness setup/cleanup first, then add a smoke assertion that fails until a container supplied with a unique non-empty `AGENT_BRIDGE_TOKEN` responds to authenticated `/v1/health` on its Docker-assigned port. Also assert image startup without a token fails clearly because `0.0.0.0` is non-loopback.
-- [ ] Put `//go:build e2e` on every Go file in `tests/e2e`, including harness/helper and test files; plain `go test ./...` must continue to discover only valid packages.
-- [ ] Add one ordered strict mock test covering first POST agent requirement, initialize, session/new cwd persistence, synchronous request correlation preserving numeric/string IDs, notification 202, reverse-call/client response completion, and raw payload equality.
-- [ ] Extend it with duplicate in-flight ID 409, timeout/late persisted response, invalid stdout synthetic event, exited synthetic event, stderr redaction/cap, and reinitialize-only recreation.
-- [ ] Verify SSE subscribe-before-watermark behavior, heartbeat framing, `Last-Event-ID: 0`, replay/live no-gap sequence, reconnect, lag catch-up, and closure on DELETE.
-- [ ] Verify status/event endpoints, sorted server/session lists, event filtering/pagination/order, unknown session 404, and DELETE pruning.
-- [ ] Run `go test -tags=e2e ./tests/e2e -run TestDockerMockProtocol -count=1 -v` and record failures before fixes.
+- [x] Implement harness setup/cleanup first, then add a smoke assertion that fails until a container supplied with a unique non-empty `AGENT_BRIDGE_TOKEN` responds to authenticated `/v1/health` on its Docker-assigned port. Also assert image startup without a token fails clearly because `0.0.0.0` is non-loopback.
+- [x] Put `//go:build e2e` on every Go file in `tests/e2e`, including harness/helper and test files; plain `go test ./...` must continue to discover only valid packages.
+- [x] Add one ordered strict mock test covering first POST agent requirement, initialize, session/new cwd persistence, synchronous request correlation preserving numeric/string IDs, notification 202, reverse-call/client response completion, and raw payload equality.
+- [x] Extend it with duplicate in-flight ID 409, timeout/late persisted response, invalid stdout synthetic event, exited synthetic event, stderr redaction/cap, and reinitialize-only recreation.
+- [x] Verify SSE subscribe-before-watermark behavior, heartbeat framing, `Last-Event-ID: 0`, replay/live no-gap sequence, reconnect, lag catch-up, and closure on DELETE.
+- [x] Verify status/event endpoints, sorted server/session lists, event filtering/pagination/order, unknown session 404, and DELETE pruning.
+- [x] Run `go test -tags=e2e ./tests/e2e -run TestDockerMockProtocol -count=1 -v` and record failures before fixes.
 
 **GREEN:**
 
-- [ ] Use a unique image tag/container/volume per test process and register `t.Cleanup` immediately after creation.
-- [ ] Require a unique `AGENT_BRIDGE_TOKEN` in `startContainer`, authenticate every `/v1/*` request including health/SSE, use a persistent DB path and short request timeout only where tested, and mount no host credentials.
-- [ ] Decode SSE with a scanner that supports comments, event, id, and multi-line data fields; compare persisted raw JSON as `json.RawMessage` rather than normalized structs.
-- [ ] Poll status/DB-visible endpoints with context deadlines; never infer readiness from log text alone.
-- [ ] On failure, include container logs, inspect state, HTTP status/body, and last observed SSE sequence.
-- [ ] Fix product behavior in its owning Phase 01-03 file rather than weakening assertions or adding mock-only HTTP branches.
+- [x] Use a unique image tag/container/volume per test process and register `t.Cleanup` immediately after creation.
+- [x] Require a unique `AGENT_BRIDGE_TOKEN` in `startContainer`, authenticate every `/v1/*` request including health/SSE, use a persistent DB path and short request timeout only where tested, and mount no host credentials.
+- [x] Decode SSE with a scanner that supports comments, event, id, and multi-line data fields; compare persisted raw JSON as `json.RawMessage` rather than normalized structs.
+- [x] Poll status/DB-visible endpoints with context deadlines; never infer readiness from log text alone.
+- [x] On failure, include container logs, inspect state, HTTP status/body, and last observed SSE sequence.
+- [x] Fix product behavior in its owning Phase 01-03 file rather than weakening assertions or adding mock-only HTTP branches.
 
 **Verify:** `go test -tags=e2e ./tests/e2e -run TestDockerMockProtocol -count=1 -v -timeout=10m`
 
@@ -291,18 +291,18 @@ scripts/verify-agents.sh --image agent-bridge:e2e
 
 **RED:**
 
-- [ ] Create table subtests for `claude`, `codex`, and `opencode`; each must first complete ACP `initialize` and persist its response/event.
-- [ ] For Claude/Codex, send `session/new` with a container-writable cwd and accept success or a valid ACP auth-required error envelope; then send one prompt for each and accept success or a structural `-32000` auth-required envelope (Claude keyless `session/new` normally succeeds and its auth error surfaces at `session/prompt`). Reject crashes, HTTP problems, hangs, and unrelated errors.
-- [ ] For OpenCode, require `session/new` success and a non-empty session ID, then send one prompt and accept success or ACP auth failure while requiring the process to remain supervised.
-- [ ] If session load is exercised, tolerate OpenCode's omitted `sessionId` only in the 1.18.18 response while requiring bridge session state to retain the requested ID.
-- [ ] Assert no host credential paths, API-key environment variables, or browser processes are present in the container.
-- [ ] Run the matrix and record failures before image/runtime corrections.
+- [x] Create table subtests for `claude`, `codex`, and `opencode`; each must first complete ACP `initialize` and persist its response/event.
+- [x] For Claude/Codex, send `session/new` with a container-writable cwd and accept success or a valid ACP auth-required error envelope; then send one prompt for each and accept success or a structural `-32000` auth-required envelope (Claude keyless `session/new` normally succeeds and its auth error surfaces at `session/prompt`). Reject crashes, HTTP problems, hangs, and unrelated errors.
+- [x] For OpenCode, require `session/new` success and a non-empty session ID, then send one prompt and accept success or ACP auth failure while requiring the process to remain supervised.
+- [x] If session load is exercised, tolerate OpenCode's omitted `sessionId` only in the 1.18.18 response while requiring bridge session state to retain the requested ID.
+- [x] Assert no host credential paths, API-key environment variables, or browser processes are present in the container.
+- [x] Run the matrix and record failures before image/runtime corrections.
 
 **GREEN:**
 
-- [ ] Correct image PATH, HOME, package installation, default agent args, or process environment sanitization as indicated; do not add special success paths for E2E.
-- [ ] Bound each initialize/session operation independently so one agent hang identifies the exact binary.
-- [ ] Keep auth-error matching structural and assert the JSON-RPC code `-32000` explicitly; never use a broad substring that accepts arbitrary failures.
+- [x] Correct image PATH, HOME, package installation, default agent args, or process environment sanitization as indicated; do not add special success paths for E2E.
+- [x] Bound each initialize/session operation independently so one agent hang identifies the exact binary.
+- [x] Keep auth-error matching structural and assert the JSON-RPC code `-32000` explicitly; never use a broad substring that accepts arbitrary failures.
 
 **Verify:** `go test -tags=e2e ./tests/e2e -run TestDockerKeylessAgents -count=1 -v -timeout=10m`
 
@@ -318,18 +318,18 @@ scripts/verify-agents.sh --image agent-bridge:e2e
 
 **RED:**
 
-- [ ] Create a mock server/session/event sequence on a named volume, capture status/PID/last sequence, and terminate the container without DELETE.
-- [ ] Start a new container against the same volume and assert prior `creating|idle|busy` becomes `exited`, PID is omitted, events/session cwd remain, and no persisted PID is signaled.
-- [ ] Assert a non-`initialize` POST returns 409 with reinitialization guidance; then initialize recreates the process without deleting old events.
-- [ ] Send explicit `session/load` or `session/resume`; prove the bridge does not synthesize/replay prompts and new event sequence continues monotonically.
-- [ ] Reconnect SSE with the old last ID and prove replay/live continuity after restart.
-- [ ] Run the test and record failure before lifecycle fixes.
+- [x] Create a mock server/session/event sequence on a named volume, capture status/PID/last sequence, and terminate the container without DELETE.
+- [x] Start a new container against the same volume and assert prior `creating|idle|busy` becomes `exited`, PID is omitted, events/session cwd remain, and no persisted PID is signaled.
+- [x] Assert a non-`initialize` POST returns 409 with reinitialization guidance; then initialize recreates the process without deleting old events.
+- [x] Send explicit `session/load` or `session/resume`; prove the bridge does not synthesize/replay prompts and new event sequence continues monotonically.
+- [x] Reconnect SSE with the old last ID and prove replay/live continuity after restart.
+- [x] Run the test and record failure before lifecycle fixes.
 
 **GREEN:**
 
-- [ ] Fix startup recovery transaction, stale PID clearing, event sequence allocation, or recreation state in owning persistence/runtime code.
-- [ ] Do not inspect or signal persisted PIDs during startup.
-- [ ] Keep one SQL connection/WAL/foreign keys/5s busy timeout and preserve prune-on-DELETE-only retention.
+- [x] Fix startup recovery transaction, stale PID clearing, event sequence allocation, or recreation state in owning persistence/runtime code.
+- [x] Do not inspect or signal persisted PIDs during startup.
+- [x] Keep one SQL connection/WAL/foreign keys/5s busy timeout and preserve prune-on-DELETE-only retention.
 
 **Verify:** `go test -tags=e2e ./tests/e2e -run TestDockerStateRestart -count=1 -v -timeout=10m`
 
@@ -345,22 +345,22 @@ scripts/verify-agents.sh --image agent-bridge:e2e
 
 **RED:**
 
-- [ ] With an injected clock in owning unit tests, prove idle TTL starts at the idle transition and stale timers cannot reap a newly busy/recreated process. In one Docker check use a short nonzero TTL to assert process-group exit/status/event persistence, then use TTL 0 to assert no reap; do not repeat real timer boundaries in race loops.
-- [ ] Start mock and managed processes that fork children; DELETE/stop/kill each and inspect `/proc/<pid>/stat` while the container is still running. Distinguish missing PIDs from state `Z`: both leaders and descendants must disappear, and a zombie is a failure rather than evidence of cleanup.
-- [ ] Add ACP, managed, and one-shot fixtures whose direct group leader exits while a descendant remains blocked with inherited pipes. Assert each owner immediately SIGKILLs the captured negative PGID before pumps/status/capacity release and Tini reaps the orphan while the container remains running.
-- [ ] Deliberately orphan a short-lived grandchild under the bridge, keep the container running, verify `tini` remains PID 1, and poll `/proc` until the descendant is absent rather than zombie. This specifically proves subreaper behavior independent of container exit cleanup.
-- [ ] Open SSE, start ACP and managed process groups, configure a PID file on the persistent volume, then send Docker SIGTERM.
-- [ ] Assert acceptance stops first; pre-drain closes SSE, stops reapers, and signal-and-wait terminates groups through process reap and pump completion before handler drain; `http.Server.Shutdown` then completes; post-drain idempotently confirms completion, waits any non-process commit work, and checkpoints/closes DB; PID removal is last. Assert container exit 0 within one 10s budget and DB reopens with committed events.
-- [ ] Assert WAL checkpoint behavior by restarting on the same volume and reading state; do not require WAL file absence as the sole correctness signal.
-- [ ] Repeat abrupt SIGKILL followed by restart to prove startup recovery without claiming clean-shutdown guarantees.
-- [ ] Run each test and retain failing logs/process diagnostics before fixes.
+- [x] With an injected clock in owning unit tests, prove idle TTL starts at the idle transition and stale timers cannot reap a newly busy/recreated process. In one Docker check use a short nonzero TTL to assert process-group exit/status/event persistence, then use TTL 0 to assert no reap; do not repeat real timer boundaries in race loops.
+- [x] Start mock and managed processes that fork children; DELETE/stop/kill each and inspect `/proc/<pid>/stat` while the container is still running. Distinguish missing PIDs from state `Z`: both leaders and descendants must disappear, and a zombie is a failure rather than evidence of cleanup.
+- [x] Add ACP, managed, and one-shot fixtures whose direct group leader exits while a descendant remains blocked with inherited pipes. Assert each owner immediately SIGKILLs the captured negative PGID before pumps/status/capacity release and Tini reaps the orphan while the container remains running.
+- [x] Deliberately orphan a short-lived grandchild under the bridge, keep the container running, verify `tini` remains PID 1, and poll `/proc` until the descendant is absent rather than zombie. This specifically proves subreaper behavior independent of container exit cleanup.
+- [x] Open SSE, start ACP and managed process groups, configure a PID file on the persistent volume, then send Docker SIGTERM.
+- [x] Assert acceptance stops first; pre-drain closes SSE, stops reapers, and signal-and-wait terminates groups through process reap and pump completion before handler drain; `http.Server.Shutdown` then completes; post-drain idempotently confirms completion, waits any non-process commit work, and checkpoints/closes DB; PID removal is last. Assert container exit 0 within one 10s budget and DB reopens with committed events.
+- [x] Assert WAL checkpoint behavior by restarting on the same volume and reading state; do not require WAL file absence as the sole correctness signal.
+- [x] Repeat abrupt SIGKILL followed by restart to prove startup recovery without claiming clean-shutdown guarantees.
+- [x] Run each test and retain failing logs/process diagnostics before fixes.
 
 **GREEN:**
 
-- [ ] Fix reaper timer ownership so stale timers cannot kill a newly busy/recreated process.
-- [ ] Ensure all kill paths address negative process-group IDs on Linux and wait for pump goroutines/process reap.
-- [ ] Preserve staged shutdown ownership: close listener acceptance; run pre-drain hooks that close SSE, stop reapers, and signal-and-wait process groups through process reap and pump completion; call `http.Server.Shutdown` to wait handlers; run post-drain hooks only to idempotently confirm process/pump completion, wait non-process commits, and checkpoint/close DB; remove PID last; return exit code 0.
-- [ ] Keep one absolute 10-second outer deadline created from a non-canceled parent. Give every stage a fresh context with that same deadline so remaining time is useful, continue best-effort after bounded errors, and never wait for SSE before pre-drain closes it.
+- [x] Fix reaper timer ownership so stale timers cannot kill a newly busy/recreated process.
+- [x] Ensure all kill paths address negative process-group IDs on Linux and wait for pump goroutines/process reap.
+- [x] Preserve staged shutdown ownership: close listener acceptance; run pre-drain hooks that close SSE, stop reapers, and signal-and-wait process groups through process reap and pump completion; call `http.Server.Shutdown` to wait handlers; run post-drain hooks only to idempotently confirm process/pump completion, wait non-process commits, and checkpoint/close DB; remove PID last; return exit code 0.
+- [x] Keep one absolute 10-second outer deadline created from a non-canceled parent. Give every stage a fresh context with that same deadline so remaining time is useful, continue best-effort after bounded errors, and never wait for SSE before pre-drain closes it.
 
 **Verify:** `go test -tags=e2e ./tests/e2e -run 'TestDocker(IdleReaper|DeleteKillsProcessGroup|InitReapsOrphans|GracefulShutdown)' -count=1 -v -timeout=10m`
 
@@ -376,17 +376,17 @@ scripts/verify-agents.sh --image agent-bridge:e2e
 
 **RED:**
 
-- [ ] Add image-level assertions for non-root UID/GID, writable HOME, root-owned non-writable binary/dependencies, static target architecture, exact package versions, required env, and no npm cache/source/build toolchain in final layers.
-- [ ] Add HTTP assertions that root remains public, every `/v1/*` route including health requires bearer auth when configured, token checks do not log Authorization, non-loopback startup rejects an empty token unless the explicit unsafe override is `1`, and representative handler-level 404/405/body-limit failures are RFC 9457 problem+json. Do not assert that `net/http` transport parser/header errors use bridge problem JSON.
-- [ ] Assert child environments remove `AGENT_BRIDGE_TOKEN`, `AGENT_BRIDGE_PID_FILE`, `AGENT_BRIDGE_INTERNAL_MOCK_AGENT`, and `AGENT_BRIDGE_ALLOW_INSECURE_REMOTE` while a benign credential-shaped test variable survives; do not print its value.
-- [ ] Exercise ACP, filesystem, process input/output/log, invalid server ID, media negotiation, and redacted stderr behavior primarily through injected small limits. Run each actual 10 MiB/512 MiB/8 KiB compatibility boundary at most once in its owning integration layer, not in repeated/race suites.
-- [ ] Run `go test -race -skip 'TestRealHeartbeat15Seconds' ./...` repeatedly only for fast injected-clock/limit tests; run expensive Docker and real-boundary E2E once per gate. Capture every race/flaky failure before changing code.
+- [x] Add image-level assertions for non-root UID/GID, writable HOME, root-owned non-writable binary/dependencies, static target architecture, exact package versions, required env, and no npm cache/source/build toolchain in final layers.
+- [x] Add HTTP assertions that root remains public, every `/v1/*` route including health requires bearer auth when configured, token checks do not log Authorization, non-loopback startup rejects an empty token unless the explicit unsafe override is `1`, and representative handler-level 404/405/body-limit failures are RFC 9457 problem+json. Do not assert that `net/http` transport parser/header errors use bridge problem JSON.
+- [x] Assert child environments remove `AGENT_BRIDGE_TOKEN`, `AGENT_BRIDGE_PID_FILE`, `AGENT_BRIDGE_INTERNAL_MOCK_AGENT`, and `AGENT_BRIDGE_ALLOW_INSECURE_REMOTE` while a benign credential-shaped test variable survives; do not print its value.
+- [x] Exercise ACP, filesystem, process input/output/log, invalid server ID, media negotiation, and redacted stderr behavior primarily through injected small limits. Run each actual 10 MiB/512 MiB/8 KiB compatibility boundary at most once in its owning integration layer, not in repeated/race suites.
+- [x] Run `go test -race -skip 'TestRealHeartbeat15Seconds' ./...` repeatedly only for fast injected-clock/limit tests; run expensive Docker and real-boundary E2E once per gate. Capture every race/flaky failure before changing code.
 
 **GREEN:**
 
-- [ ] Make the smallest owning-code correction for each demonstrated failure; do not add compatibility routes, retry layers, telemetry, runtime installers, or dependencies.
-- [ ] Ensure request logs contain method, URI, status, and latency but never Authorization or request bodies.
-- [ ] Run `go vet`, full unit/integration tests, race tests, strict shell syntax, image verification, and E2E matrix.
+- [x] Make the smallest owning-code correction for each demonstrated failure; do not add compatibility routes, retry layers, telemetry, runtime installers, or dependencies.
+- [x] Ensure request logs contain method, URI, status, and latency but never Authorization or request bodies.
+- [x] Run `go vet`, full unit/integration tests, race tests, strict shell syntax, image verification, and E2E matrix.
 
 **Verify:**
 
@@ -413,21 +413,21 @@ go test -tags=e2e ./tests/e2e -count=1 -v -timeout=20m
 
 **RED:**
 
-- [ ] Extend the Phase 01 documentation checklist test with the final public environment variables, agent versions/default commands, required volume paths, remote-token safety, key endpoint families, limits, and staged shutdown semantics; retain behavioral failures for incomplete existing content rather than treating README absence as RED.
-- [ ] Search the intended public text for `mock` and require no match.
+- [x] Extend the Phase 01 documentation checklist test with the final public environment variables, agent versions/default commands, required volume paths, remote-token safety, key endpoint families, limits, and staged shutdown semantics; retain behavioral failures for incomplete existing content rather than treating README absence as RED.
+- [x] Search the intended public text for `mock` and require no match.
 
 **GREEN:**
 
-- [ ] Document host build and `docker buildx` commands, supported `linux/amd64` and `linux/arm64`, expected large image size, non-root user, pinned PID-1 init/subreaper, port 2468, and immutable preinstalled agents.
-- [ ] Document all public environment defaults/overrides, JSON-array agent args, credential inheritance, token behavior including authenticated health probes, PID file, DB persistence, and idle/request timeout controls. State that the image's `0.0.0.0` bind requires `AGENT_BRIDGE_TOKEN`; label `AGENT_BRIDGE_ALLOW_INSECURE_REMOTE=1` unsafe and never use it in deployment examples.
-- [ ] Provide minimal curl examples for health, initialize, SSE, process, filesystem, upload, and whole-object MCP/skills config without exposing private mock behavior.
-- [ ] Explain that ACP content is raw passthrough, one process lives per server ID, DELETE prunes durable state, restart marks stale live servers exited, clients must initialize then load/resume, and retention is unbounded until DELETE.
-- [ ] State that the bridge adds no event-retention subsystem; operators may apply an OS/container volume quota if the accepted unbounded-until-DELETE disk risk needs a hard bound.
-- [ ] Explain keyless outcomes and explicitly defer authenticated prompt/resume E2E; never imply credentials are included in the image.
-- [ ] Document graceful shutdown's one-budget 10-second staged contract and which paths must be mounted for persistence.
-- [ ] Document the headless auth limitation: the bridge does not advertise `clientCapabilities.auth.terminal`, agents may advertise no auth methods, unauthenticated sessions fail in-band with `-32000`, and environment-based credentials are the supported path.
-- [ ] Document the required persistent mounts for resume: agent home directories (`~/.claude`, `~/.codex`, OpenCode state) and the `AGENT_BRIDGE_DB` parent must survive container restarts; a container without them loses resume state.
-- [ ] Update the `GET /` `docs` field to the final public documentation URL chosen in this task and assert it in the documentation checklist test.
+- [x] Document host build and `docker buildx` commands, supported `linux/amd64` and `linux/arm64`, expected large image size, non-root user, pinned PID-1 init/subreaper, port 2468, and immutable preinstalled agents.
+- [x] Document all public environment defaults/overrides, JSON-array agent args, credential inheritance, token behavior including authenticated health probes, PID file, DB persistence, and idle/request timeout controls. State that the image's `0.0.0.0` bind requires `AGENT_BRIDGE_TOKEN`; label `AGENT_BRIDGE_ALLOW_INSECURE_REMOTE=1` unsafe and never use it in deployment examples.
+- [x] Provide minimal curl examples for health, initialize, SSE, process, filesystem, upload, and whole-object MCP/skills config without exposing private mock behavior.
+- [x] Explain that ACP content is raw passthrough, one process lives per server ID, DELETE prunes durable state, restart marks stale live servers exited, clients must initialize then load/resume, and retention is unbounded until DELETE.
+- [x] State that the bridge adds no event-retention subsystem; operators may apply an OS/container volume quota if the accepted unbounded-until-DELETE disk risk needs a hard bound.
+- [x] Explain keyless outcomes and explicitly defer authenticated prompt/resume E2E; never imply credentials are included in the image.
+- [x] Document graceful shutdown's one-budget 10-second staged contract and which paths must be mounted for persistence.
+- [x] Document the headless auth limitation: the bridge does not advertise `clientCapabilities.auth.terminal`, agents may advertise no auth methods, unauthenticated sessions fail in-band with `-32000`, and environment-based credentials are the supported path.
+- [x] Document the required persistent mounts for resume: agent home directories (`~/.claude`, `~/.codex`, OpenCode state) and the `AGENT_BRIDGE_DB` parent must survive container restarts; a container without them loses resume state.
+- [x] Update the `GET /` `docs` field to the final public documentation URL chosen in this task and assert it in the documentation checklist test.
 
 **Verify:**
 
@@ -451,20 +451,20 @@ grep -q 'OpenCode 1.18.18' README.md
 
 **RED:**
 
-- [ ] Add workflow contract assertions that fail until CI contains a read-only formatting gate, unit/vet/race/static checks, token-authenticated keyless host-architecture Docker E2E, and a non-publishing amd64/arm64 build/inspection job. Assert exact `pull_request`, `push` to `main`, weekly `schedule`, and `workflow_dispatch` triggers; exact job conditions below; and a full 40-character hexadecimal SHA after `@` for every non-local `uses:` reference. A missing workflow is setup evidence only; retain the failing required-job assertions.
-- [ ] Run a no-cache host architecture build and compare package/binary verification against the cached build.
-- [ ] Run a two-platform build to a local OCI archive or registry-backed test tag and verify both manifest entries and target ELF architectures.
-- [ ] Run all checks from a clean worktree snapshot/context and capture any undeclared generated-file or network-at-runtime dependency.
+- [x] Add workflow contract assertions that fail until CI contains a read-only formatting gate, unit/vet/race/static checks, token-authenticated keyless host-architecture Docker E2E, and a non-publishing amd64/arm64 build/inspection job. Assert exact `pull_request`, `push` to `main`, weekly `schedule`, and `workflow_dispatch` triggers; exact job conditions below; and a full 40-character hexadecimal SHA after `@` for every non-local `uses:` reference. A missing workflow is setup evidence only; retain the failing required-job assertions.
+- [x] Run a no-cache host architecture build and compare package/binary verification against the cached build.
+- [x] Run a two-platform build to a local OCI archive or registry-backed test tag and verify both manifest entries and target ELF architectures.
+- [x] Run all checks from a clean worktree snapshot/context and capture any undeclared generated-file or network-at-runtime dependency.
 
 **GREEN:**
 
-- [ ] Create `.github/workflows/ci.yml` with least-privilege read permissions and only these triggers: `pull_request`; `push` with `branches: [main]`; one weekly `schedule`; and `workflow_dispatch`. Pin every non-local action, including GitHub-owned and Docker actions, as `owner/repository@<full-40-character-commit-SHA>`; tags, branches, abbreviated SHAs, and floating major versions are forbidden.
-- [ ] Gate formatting/unit/vet/race/static jobs and the token-authenticated keyless host-architecture Docker E2E job with `if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')`. Start verification with `test "$(go env GOVERSION)" = go1.26.8`. Formatting must only detect drift with `test -z "$(gofmt -l cmd internal tests)"` or an equivalent non-writing check; verification must never run `gofmt -w`. Static checks include the `CGO_ENABLED=0` build, host/tooling-stage ELF inspection, pinned staticcheck 2026.2.1, and pinned govulncheck v1.7.0, all run with `-tags=e2e` so the tag-gated package is analyzed instead of being silently skipped by `./...`.
-- [ ] In the host-architecture Docker E2E job, build the image, run runtime verification, supply a generated non-empty test token, and execute keyless/mock E2E without agent credentials. Do not print the token or use the insecure-remote override.
-- [ ] Gate the non-publishing `linux/amd64,linux/arm64` build/OCI inspection job with `if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`. It must not run for `pull_request`; manual execution occurs only through `workflow_dispatch`. Keep live authenticated real-agent prompt/resume deferred until isolated CI credentials exist.
-- [ ] Remove nondeterministic build inputs such as unpinned base tags, semver ranges, generated lock drift, timestamps embedded by custom scripts, or architecture-hardcoded copies.
-- [ ] Confirm repeated builds use the same base digests, npm lock integrity, Go module sums, and target-specific binary path. Byte-identical whole-image IDs are not required because OCI metadata may vary; dependency identity is required.
-- [ ] Execute the final command set and retain CI logs as release evidence.
+- [x] Create `.github/workflows/ci.yml` with least-privilege read permissions and only these triggers: `pull_request`; `push` with `branches: [main]`; one weekly `schedule`; and `workflow_dispatch`. Pin every non-local action, including GitHub-owned and Docker actions, as `owner/repository@<full-40-character-commit-SHA>`; tags, branches, abbreviated SHAs, and floating major versions are forbidden.
+- [x] Gate formatting/unit/vet/race/static jobs and the token-authenticated keyless host-architecture Docker E2E job with `if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')`. Start verification with `test "$(go env GOVERSION)" = go1.26.8`. Formatting must only detect drift with `test -z "$(gofmt -l cmd internal tests)"` or an equivalent non-writing check; verification must never run `gofmt -w`. Static checks include the `CGO_ENABLED=0` build, host/tooling-stage ELF inspection, pinned staticcheck 2026.2.1, and pinned govulncheck v1.7.0, all run with `-tags=e2e` so the tag-gated package is analyzed instead of being silently skipped by `./...`.
+- [x] In the host-architecture Docker E2E job, build the image, run runtime verification, supply a generated non-empty test token, and execute keyless/mock E2E without agent credentials. Do not print the token or use the insecure-remote override.
+- [x] Gate the non-publishing `linux/amd64,linux/arm64` build/OCI inspection job with `if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`. It must not run for `pull_request`; manual execution occurs only through `workflow_dispatch`. Keep live authenticated real-agent prompt/resume deferred until isolated CI credentials exist.
+- [x] Remove nondeterministic build inputs such as unpinned base tags, semver ranges, generated lock drift, timestamps embedded by custom scripts, or architecture-hardcoded copies.
+- [x] Confirm repeated builds use the same base digests, npm lock integrity, Go module sums, and target-specific binary path. Byte-identical whole-image IDs are not required because OCI metadata may vary; dependency identity is required.
+- [x] Execute the final command set and retain CI logs as release evidence.
 
 **Verify:**
 
@@ -521,20 +521,20 @@ Phase 06 is the final sequential phase and begins only after Phases 01-05 are in
 
 ## Completion Criteria
 
-- [ ] No Docker base tag is unpinned and no npm dependency uses a range.
-- [ ] `npm ci` from the committed lock installs all optional dependencies and runs required lifecycle scripts.
-- [ ] The final image runs as UID/GID 10001 under checksum-pinned Tini 0.19.0 PID 1, has writable HOME, immutable agent files, and contains no build toolchain or ELF inspection tooling.
-- [ ] `verify-agents.sh` proves runtime-visible versions, expected commands/default OpenCode ACP invocation, user/permissions/environment, and entrypoint; the builder/host tooling gate separately proves target architecture and static bridge linkage.
-- [ ] The focused raw-byte mock fixture passes required ACP correlation, persistence, SSE, deletion, timeout, invalid-output, and redaction assertions without creating a transcript/replay subsystem.
-- [ ] Keyless Claude, Codex, and OpenCode outcomes match only the explicitly allowed matrix.
-- [ ] State survives restart; stale live state becomes exited without signaling persisted PIDs; initialize plus explicit load/resume restores use.
-- [ ] Idle reap, DELETE, stop, kill, shutdown, and every ACP/managed/one-shot direct-child exit terminate full process groups before pumps/status/capacity release; pinned PID 1 reaps orphaned descendants without zombies while the container remains running; clean shutdown exits 0 within one 10-second budget and removes the PID file last.
-- [ ] The image and E2E require a token for the `0.0.0.0` bind; empty-token non-loopback startup fails unless the explicit unsafe override is `1`.
-- [ ] Auth, handler-level RFC 9457 errors, limits, logging redaction, race tests, static build, and all prior phase tests pass; transport parser/header errors are not claimed as problem JSON.
-- [ ] README matches shipped public behavior and contains no private mock documentation.
+- [x] No Docker base tag is unpinned and no npm dependency uses a range.
+- [x] `npm ci` from the committed lock installs all optional dependencies and runs required lifecycle scripts.
+- [x] The final image runs as UID/GID 10001 under checksum-pinned Tini 0.19.0 PID 1, has writable HOME, immutable agent files, and contains no build toolchain or ELF inspection tooling.
+- [x] `verify-agents.sh` proves runtime-visible versions, expected commands/default OpenCode ACP invocation, user/permissions/environment, and entrypoint; the builder/host tooling gate separately proves target architecture and static bridge linkage.
+- [x] The focused raw-byte mock fixture passes required ACP correlation, persistence, SSE, deletion, timeout, invalid-output, and redaction assertions without creating a transcript/replay subsystem.
+- [x] Keyless Claude, Codex, and OpenCode outcomes match only the explicitly allowed matrix.
+- [x] State survives restart; stale live state becomes exited without signaling persisted PIDs; initialize plus explicit load/resume restores use.
+- [x] Idle reap, DELETE, stop, kill, shutdown, and every ACP/managed/one-shot direct-child exit terminate full process groups before pumps/status/capacity release; pinned PID 1 reaps orphaned descendants without zombies while the container remains running; clean shutdown exits 0 within one 10-second budget and removes the PID file last.
+- [x] The image and E2E require a token for the `0.0.0.0` bind; empty-token non-loopback startup fails unless the explicit unsafe override is `1`.
+- [x] Auth, handler-level RFC 9457 errors, limits, logging redaction, race tests, static build, and all prior phase tests pass; transport parser/header errors are not claimed as problem JSON.
+- [x] README matches shipped public behavior and contains no private mock documentation.
 - [ ] Both `linux/amd64` and `linux/arm64` images build and contain the correct target binary.
-- [ ] Every Go file in `tests/e2e` carries the `e2e` build tag; plain `go test ./...` and tagged vet/static checks both remain valid.
-- [ ] `.github/workflows/ci.yml` uses only full 40-character SHA action pins, detects formatting drift without writing files, runs unit/vet/race/static and token-authenticated keyless host-architecture Docker E2E only on pull requests and pushes to `main`, and runs non-publishing multiarch verification only on pushes to `main`, weekly schedule, and `workflow_dispatch`.
+- [x] Every Go file in `tests/e2e` carries the `e2e` build tag; plain `go test ./...` and tagged vet/static checks both remain valid.
+- [x] `.github/workflows/ci.yml` uses only full 40-character SHA action pins, detects formatting drift without writing files, runs unit/vet/race/static and token-authenticated keyless host-architecture Docker E2E only on pull requests and pushes to `main`, and runs non-publishing multiarch verification only on pushes to `main`, weekly schedule, and `workflow_dispatch`.
 
 ## Open Questions
 
