@@ -260,22 +260,22 @@ scripts/verify-agents.sh --image agent-bridge:e2e
 
 **RED:**
 
-- [ ] Implement harness setup/cleanup first, then add a smoke assertion that fails until a container supplied with a unique non-empty `AGENT_BRIDGE_TOKEN` responds to authenticated `/v1/health` on its Docker-assigned port. Also assert image startup without a token fails clearly because `0.0.0.0` is non-loopback.
-- [ ] Put `//go:build e2e` on every Go file in `tests/e2e`, including harness/helper and test files; plain `go test ./...` must continue to discover only valid packages.
-- [ ] Add one ordered strict mock test covering first POST agent requirement, initialize, session/new cwd persistence, synchronous request correlation preserving numeric/string IDs, notification 202, reverse-call/client response completion, and raw payload equality.
-- [ ] Extend it with duplicate in-flight ID 409, timeout/late persisted response, invalid stdout synthetic event, exited synthetic event, stderr redaction/cap, and reinitialize-only recreation.
-- [ ] Verify SSE subscribe-before-watermark behavior, heartbeat framing, `Last-Event-ID: 0`, replay/live no-gap sequence, reconnect, lag catch-up, and closure on DELETE.
-- [ ] Verify status/event endpoints, sorted server/session lists, event filtering/pagination/order, unknown session 404, and DELETE pruning.
-- [ ] Run `go test -tags=e2e ./tests/e2e -run TestDockerMockProtocol -count=1 -v` and record failures before fixes.
+- [x] Implement harness setup/cleanup first, then add a smoke assertion that fails until a container supplied with a unique non-empty `AGENT_BRIDGE_TOKEN` responds to authenticated `/v1/health` on its Docker-assigned port. Also assert image startup without a token fails clearly because `0.0.0.0` is non-loopback.
+- [x] Put `//go:build e2e` on every Go file in `tests/e2e`, including harness/helper and test files; plain `go test ./...` must continue to discover only valid packages.
+- [x] Add one ordered strict mock test covering first POST agent requirement, initialize, session/new cwd persistence, synchronous request correlation preserving numeric/string IDs, notification 202, reverse-call/client response completion, and raw payload equality.
+- [x] Extend it with duplicate in-flight ID 409, timeout/late persisted response, invalid stdout synthetic event, exited synthetic event, stderr redaction/cap, and reinitialize-only recreation.
+- [x] Verify SSE subscribe-before-watermark behavior, heartbeat framing, `Last-Event-ID: 0`, replay/live no-gap sequence, reconnect, lag catch-up, and closure on DELETE.
+- [x] Verify status/event endpoints, sorted server/session lists, event filtering/pagination/order, unknown session 404, and DELETE pruning.
+- [x] Run `go test -tags=e2e ./tests/e2e -run TestDockerMockProtocol -count=1 -v` and record failures before fixes.
 
 **GREEN:**
 
-- [ ] Use a unique image tag/container/volume per test process and register `t.Cleanup` immediately after creation.
-- [ ] Require a unique `AGENT_BRIDGE_TOKEN` in `startContainer`, authenticate every `/v1/*` request including health/SSE, use a persistent DB path and short request timeout only where tested, and mount no host credentials.
-- [ ] Decode SSE with a scanner that supports comments, event, id, and multi-line data fields; compare persisted raw JSON as `json.RawMessage` rather than normalized structs.
-- [ ] Poll status/DB-visible endpoints with context deadlines; never infer readiness from log text alone.
-- [ ] On failure, include container logs, inspect state, HTTP status/body, and last observed SSE sequence.
-- [ ] Fix product behavior in its owning Phase 01-03 file rather than weakening assertions or adding mock-only HTTP branches.
+- [x] Use a unique image tag/container/volume per test process and register `t.Cleanup` immediately after creation.
+- [x] Require a unique `AGENT_BRIDGE_TOKEN` in `startContainer`, authenticate every `/v1/*` request including health/SSE, use a persistent DB path and short request timeout only where tested, and mount no host credentials.
+- [x] Decode SSE with a scanner that supports comments, event, id, and multi-line data fields; compare persisted raw JSON as `json.RawMessage` rather than normalized structs.
+- [x] Poll status/DB-visible endpoints with context deadlines; never infer readiness from log text alone.
+- [x] On failure, include container logs, inspect state, HTTP status/body, and last observed SSE sequence.
+- [x] Fix product behavior in its owning Phase 01-03 file rather than weakening assertions or adding mock-only HTTP branches.
 
 **Verify:** `go test -tags=e2e ./tests/e2e -run TestDockerMockProtocol -count=1 -v -timeout=10m`
 
