@@ -923,3 +923,38 @@ func TestACPEvents(t *testing.T) {
 		}
 	})
 }
+
+// TestACPMalformedQueryRejected proves a percent-decoding error in ACP query
+// strings is a 400 rather than a silently dropped parameter.
+func TestACPMalformedQueryRejected(t *testing.T) {
+	t.Run("events", func(t *testing.T) {
+		handler := acpHandler(t, &fakeACP{})
+		req := httptest.NewRequest(http.MethodGet, "/v1/acp/events-1/events", nil)
+		req.URL.RawQuery = "limit=1&evil=%zz"
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		assertProblem(t, rec, http.StatusBadRequest)
+	})
+
+	t.Run("post agent", func(t *testing.T) {
+		handler := acpHandler(t, &fakeACP{})
+		req := httptest.NewRequest(http.MethodPost, "/v1/acp/server-1", strings.NewReader(validNotification))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json")
+		req.URL.RawQuery = "agent=claude&evil=%zz"
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		assertProblem(t, rec, http.StatusBadRequest)
+	})
+
+	t.Run("post agent unknown key", func(t *testing.T) {
+		handler := acpHandler(t, &fakeACP{})
+		req := httptest.NewRequest(http.MethodPost, "/v1/acp/server-1", strings.NewReader(validNotification))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json")
+		req.URL.RawQuery = "agent=claude&bogus=1"
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		assertProblem(t, rec, http.StatusBadRequest)
+	})
+}

@@ -8,7 +8,9 @@ import (
 	"strings"
 
 	"github.com/viethoangcr/agent-bridge/internal/acpstore"
+	"github.com/viethoangcr/agent-bridge/internal/filesystem"
 	"github.com/viethoangcr/agent-bridge/internal/process"
+	"github.com/viethoangcr/agent-bridge/internal/projectconfig"
 )
 
 // rootDocsURL is the stable documentation location served by the root endpoint
@@ -27,6 +29,8 @@ type Dependencies struct {
 	ACP       ACPProxy
 	ACPStore  *acpstore.Store
 	Processes *process.Manager
+	Files     *filesystem.Service
+	Config    *projectconfig.Service
 }
 
 // Server owns the Phase 01 route table and the composed HTTP handler. It is
@@ -39,6 +43,15 @@ type Server struct {
 	// newHeartbeatTicker builds the SSE keep-alive source. Tests replace it
 	// with a fake ticker so no unit test waits for the 15-second interval.
 	newHeartbeatTicker func() heartbeatTicker
+
+	// fsFileLimit and fsUploadLimit bound raw file PUT and upload bodies. They
+	// default to the production 512MiB constants and are overridable in tests.
+	fsFileLimit   int64
+	fsUploadLimit int64
+
+	// configJSONLimit bounds JSON config request bodies. It defaults to the
+	// master 10MiB JSON ceiling and is overridable in tests.
+	configJSONLimit int64
 }
 
 // NewServer builds the route table and composes the middleware chain once, so
@@ -49,6 +62,9 @@ func NewServer(deps Dependencies) *Server {
 		mux:                http.NewServeMux(),
 		deps:               deps,
 		newHeartbeatTicker: newHeartbeatTicker,
+		fsFileLimit:        maxFSFileBytes,
+		fsUploadLimit:      maxFSUploadBytes,
+		configJSONLimit:    maxConfigJSONBytes,
 	}
 	s.registerRoutes()
 	s.handler = requestLogger(deps.Log, authenticate(deps.Token, s.rejectUncleanPath(s.mux)))
@@ -69,6 +85,8 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /v1/health", s.health)
 	s.registerACPRoutes()
 	s.registerProcessRoutes()
+	s.registerFilesystemRoutes(s.mux)
+	s.registerConfigRoutes(s.mux)
 	s.mux.HandleFunc(fallbackPattern, s.routeFallback)
 }
 
