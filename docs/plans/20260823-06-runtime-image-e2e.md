@@ -532,9 +532,15 @@ Phase 06 is the final sequential phase and begins only after Phases 01-05 are in
 - [x] The image and E2E require a token for the `0.0.0.0` bind; empty-token non-loopback startup fails unless the explicit unsafe override is `1`.
 - [x] Auth, handler-level RFC 9457 errors, limits, logging redaction, race tests, static build, and all prior phase tests pass; transport parser/header errors are not claimed as problem JSON.
 - [x] README matches shipped public behavior and contains no private mock documentation.
-- [ ] Both `linux/amd64` and `linux/arm64` images build and contain the correct target binary.
+- [x] Both `linux/amd64` and `linux/arm64` images build and contain the correct target binary (image-level arm64 evidence from the CI `multiarch` job after this phase's PR merge; the Dockerfile `binary-verify` stage enforces each target's ELF machine).
 - [x] Every Go file in `tests/e2e` carries the `e2e` build tag; plain `go test ./...` and tagged vet/static checks both remain valid.
 - [x] `.github/workflows/ci.yml` uses only full 40-character SHA action pins, detects formatting drift without writing files, runs unit/vet/race/static and token-authenticated keyless host-architecture Docker E2E only on pull requests and pushes to `main`, and runs non-publishing multiarch verification only on pushes to `main`, weekly schedule, and `workflow_dispatch`.
+
+## Review And CI Evidence
+
+- Oracle review (phase branch, PR #7) found three must-fix items and two minors: the acpproxy waiter did not recheck the requested agent before leasing a published instance, the unexpected `Serve`-error path skipped `http.Server.Shutdown` before post-drain DB close, CI missed the binding `go mod tidy` drift gate; `make lint`/`make vuln` omitted `-tags=e2e`, and the hardening ELF check skipped on Linux without `readelf`. All five were fixed (with regression tests) and the follow-up oracle review verdict was MERGE.
+- The local host cannot execute arm64 containers (no binfmt/QEMU; privileged registration denied; no sudo). The arm64 binary was verified locally by cross-compile plus host `readelf` (`AArch64`, static), and the image-level arm64 verification is owned by the pinned `multiarch` CI job on pushes to `main`.
+- Post-merge CI: `multiarch` run https://github.com/viethoangcr/agent-bridge/actions/runs/34710217896 reports `OCI manifest architectures: ['amd64', 'arm64']` with all jobs green. Two follow-up commits (`044b687`, `6b71f65`) hardened the OCI index architecture verification for both flat and nested index layouts.
 
 ## Open Questions
 
