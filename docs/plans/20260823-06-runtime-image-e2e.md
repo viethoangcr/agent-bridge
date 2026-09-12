@@ -175,15 +175,15 @@ func initialize(t *testing.T, c *container, serverID, agent string) rpcEnvelope
 
 **RED:**
 
-- [ ] Confirm with `npm view <package>@<version> version bin --json` that each exact package/version exists and exposes the required binary; stop and update the explicit assumption rather than silently substituting.
-- [ ] Add a small manifest/lock contract check, seed a deliberately incomplete fixture if the real files do not yet exist, and retain behavioral failures for missing exact versions, bin mappings, integrity, or optional-package lock entries. Missing production files are setup evidence only.
+- [x] Confirm with `npm view <package>@<version> version bin --json` that each exact package/version exists and exposes the required binary; stop and update the explicit assumption rather than silently substituting.
+- [x] Add a small manifest/lock contract check, seed a deliberately incomplete fixture if the real files do not yet exist, and retain behavioral failures for missing exact versions, bin mappings, integrity, or optional-package lock entries. Missing production files are setup evidence only.
 
 **GREEN:**
 
-- [ ] Write the minimal private manifest with exact versions and run `npm install --package-lock-only --ignore-scripts=false --include=optional --prefix docker/runtime` using the Node/npm version from the pinned Node 24 image.
-- [ ] Inspect the lock for exact top-level versions, integrity hashes, optional platform packages, and lifecycle metadata.
-- [ ] Run a clean `npm ci --prefix docker/runtime` without suppressing scripts/optional dependencies, verify `docker/runtime/node_modules/.bin/claude-agent-acp`, `codex-acp`, and `opencode`, then remove untracked `node_modules` without changing `.gitignore`.
-- [ ] Ensure `git diff --check -- docker/runtime/package.json docker/runtime/package-lock.json` passes.
+- [x] Write the minimal private manifest with exact versions and run `npm install --package-lock-only --ignore-scripts=false --include=optional --prefix docker/runtime` using the Node/npm version from the pinned Node 24 image.
+- [x] Inspect the lock for exact top-level versions, integrity hashes, optional platform packages, and lifecycle metadata.
+- [x] Run a clean `npm ci --prefix docker/runtime` without suppressing scripts/optional dependencies, verify `docker/runtime/node_modules/.bin/claude-agent-acp`, `codex-acp`, and `opencode`, then remove untracked `node_modules` without changing `.gitignore`.
+- [x] Ensure `git diff --check -- docker/runtime/package.json docker/runtime/package-lock.json` passes.
 
 **Verify:** `npm ci --prefix docker/runtime --dry-run --include=optional`
 
