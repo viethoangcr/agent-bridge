@@ -4,7 +4,7 @@
 remote HTTP/SSE clients and pre-provisioned coding-agent subprocesses, and
 exposes process, filesystem, and per-project config APIs.
 
-> **Status: Phases 01-04 are complete.** The binary provides validated
+> **Status: Phases 01-05 are complete.** The binary provides validated
 > environment configuration, a public `GET /` root, an authenticated
 > `GET /v1/health`, bearer-token authentication, structured request logging,
 > PID-file plus graceful-shutdown lifecycle, internal SQLite persistence with
@@ -12,8 +12,11 @@ exposes process, filesystem, and per-project config APIs.
 > `GET /v1/acp`, `GET /v1/acp/{serverId}/status`, `GET /v1/acp/{serverId}/events`,
 > SSE at `GET /v1/acp/{serverId}`, `DELETE /v1/acp/{serverId}`), and the managed
 > process/one-shot API under `/v1/processes` (start/list/get/stop/kill/delete,
-> bounded logs, stdin input, `/run`, and runtime config). The filesystem API
-> belongs to a later phase and is **not available yet**.
+> bounded logs, stdin input, `/run`, and runtime config), the filesystem API
+> (`/v1/fs/*`: entries, file GET/PUT, recursive delete, mkdir, move, stat,
+> validated tar.gz upload), and atomic per-project MCP/skills config under
+> `/v1/config/{mcp,skills}`. The runtime image and in-container E2E phase
+> remain.
 
 The authoritative contract is
 [`docs/plans/20260815-agent-bridge.md`](docs/plans/20260815-agent-bridge.md).

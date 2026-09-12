@@ -221,7 +221,12 @@ func (s *Server) handleProcessLogs(w http.ResponseWriter, r *http.Request) {
 	if !s.requireProcessManager(w) {
 		return
 	}
-	query, err := parseLogsQuery(r.URL.Query())
+	values, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid process query")
+		return
+	}
+	query, err := parseLogsQuery(values)
 	if err != nil {
 		writeProblem(w, http.StatusBadRequest, "invalid process query")
 		return

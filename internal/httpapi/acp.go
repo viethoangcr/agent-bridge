@@ -415,19 +415,30 @@ func (s *Server) decodeACPEnvelope(w http.ResponseWriter, r *http.Request) (json
 }
 
 // parseAgentQuery reads the optional agent query value. Absence returns a nil
-// agent; an empty, repeated, or unknown value is rejected.
+// agent; a malformed query, or an empty, repeated, or unknown value is
+// rejected.
 func parseAgentQuery(r *http.Request) (*string, bool) {
-	values, present := r.URL.Query()["agent"]
+	values, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		return nil, false
+	}
+	// Only the documented `agent` key is allowed; every other key is 400.
+	for key := range values {
+		if key != "agent" {
+			return nil, false
+		}
+	}
+	agents, present := values["agent"]
 	if !present {
 		return nil, true
 	}
-	if len(values) != 1 || values[0] == "" {
+	if len(agents) != 1 || agents[0] == "" {
 		return nil, false
 	}
-	if _, known := knownACPAgents[values[0]]; !known {
+	if _, known := knownACPAgents[agents[0]]; !known {
 		return nil, false
 	}
-	agent := values[0]
+	agent := agents[0]
 	return &agent, true
 }
 
@@ -607,7 +618,12 @@ func (s *Server) handleACPEvents(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusBadRequest, "invalid ACP server ID")
 		return
 	}
-	query, err := parseEventQuery(r.URL.Query())
+	values, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid ACP event query")
+		return
+	}
+	query, err := parseEventQuery(values)
 	if err != nil {
 		writeProblem(w, http.StatusBadRequest, "invalid ACP event query")
 		return

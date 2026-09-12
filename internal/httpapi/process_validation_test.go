@@ -260,6 +260,17 @@ func TestProcessEndpointsRejectQueryStrings(t *testing.T) {
 	})
 }
 
+// TestProcessLogsMalformedQueryRejected proves a percent-decoding error in the
+// logs query is rejected rather than silently dropped.
+func TestProcessLogsMalformedQueryRejected(t *testing.T) {
+	s, _ := newProcessServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/v1/processes/proc_missing/logs", nil)
+	req.URL.RawQuery = "stream=stdout&evil=%zz"
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	assertProblem(t, rec, http.StatusBadRequest)
+}
+
 // TestProcessReservedLiteralRoutes proves the config and run literals never
 // fall into the /{id} wildcard handlers: every unsupported method gets an
 // exact 405 with a deterministic Allow, while unknown IDs keep 404 semantics.

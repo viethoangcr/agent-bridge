@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/viethoangcr/agent-bridge/internal/acpproxy"
@@ -22,10 +23,12 @@ import (
 	"github.com/viethoangcr/agent-bridge/internal/acpstore"
 	"github.com/viethoangcr/agent-bridge/internal/childenv"
 	"github.com/viethoangcr/agent-bridge/internal/config"
+	"github.com/viethoangcr/agent-bridge/internal/filesystem"
 	"github.com/viethoangcr/agent-bridge/internal/httpapi"
 	"github.com/viethoangcr/agent-bridge/internal/lifecycle"
 	"github.com/viethoangcr/agent-bridge/internal/mockagent"
 	"github.com/viethoangcr/agent-bridge/internal/process"
+	"github.com/viethoangcr/agent-bridge/internal/projectconfig"
 )
 
 // acpLifecycle is the ACP proxy's staged-shutdown surface: the pre-drain hook
@@ -148,6 +151,16 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error {
 		return fmt.Errorf("resolving startup directory: %w", err)
 	}
 
+	// One process-wide mutation mutex serializes every bridge-originated
+	// filesystem and config mutation. HOME is captured once from the injected
+	// environment so the filesystem and config services share one relative root.
+	mutations := &sync.Mutex{}
+	files, err := filesystem.New(getenv("HOME"), mutations)
+	if err != nil {
+		return fmt.Errorf("constructing filesystem service: %w", err)
+	}
+	projectConfig := projectconfig.New(files, mutations)
+
 	logger := slog.New(slog.NewJSONHandler(io.Stderr, &slog.HandlerOptions{Level: cfg.LogLevel}))
 
 	// Open and reconcile durable state before the listener becomes ready so
@@ -187,6 +200,8 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error {
 		ACP:       proxy,
 		ACPStore:  store,
 		Processes: processManager,
+		Files:     files,
+		Config:    projectConfig,
 	}).Handler()
 	srv := &http.Server{
 		Handler:           handler,

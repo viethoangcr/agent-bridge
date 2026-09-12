@@ -648,3 +648,73 @@ func TestACPShutdown(t *testing.T) {
 		}
 	})
 }
+
+// TestRunWiresConfigServices proves Run builds one shared filesystem and
+// project-config stack from the injected HOME and serves the config routes
+// through the public handler, writing mode-0600 files.
+func TestRunWiresConfigServices(t *testing.T) {
+	restore := setShutdownGrace(t, 2*time.Second)
+	defer restore()
+
+	addr := freeAddress(t)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split address: %v", err)
+	}
+	home := t.TempDir()
+	getenv := testGetenv(map[string]string{
+		"AGENT_BRIDGE_HOST": host,
+		"AGENT_BRIDGE_PORT": port,
+		"AGENT_BRIDGE_DB":   filepath.Join(home, "bridge.db"),
+		"HOME":              home,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	runErr := make(chan error, 1)
+	go func() { runErr <- Run(ctx, getenv, testIO()) }()
+	waitForHealth(t, "http://"+addr+"/v1/health")
+
+	client := &http.Client{Timeout: time.Second}
+	target := "http://" + addr + "/v1/config/mcp?directory=project"
+	req, err := http.NewRequest(http.MethodPut, target, strings.NewReader(`{"s":{"command":"run"}}`))
+	if err != nil {
+		t.Fatalf("build PUT: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("PUT: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("PUT status = %d, want %d", resp.StatusCode, http.StatusNoContent)
+	}
+
+	path := filepath.Join(home, "project", ".agent-bridge", "config", "mcp.json")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat config: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("config mode = %04o, want 0600", info.Mode().Perm())
+	}
+
+	getResp, err := client.Get(target)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	_ = getResp.Body.Close()
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET status = %d, want %d", getResp.StatusCode, http.StatusOK)
+	}
+
+	cancel()
+	select {
+	case err := <-runErr:
+		if err != nil {
+			t.Fatalf("Run() = %v, want nil after cancellation", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after cancellation")
+	}
+}
