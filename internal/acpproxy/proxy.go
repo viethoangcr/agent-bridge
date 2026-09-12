@@ -324,6 +324,27 @@ func (p *Proxy) acquireForPost(ctx context.Context, lk *lifecycleLock, serverID 
 			if err := p.create(ctx, lk, placeholder, serverID, agent, method); err != nil {
 				return nil, err
 			}
+			// create published the placeholder. Re-check and take the lease
+			// under the same lock so a concurrent DELETE cannot slip between
+			// the health check and the re-acquisition and make this caller
+			// recreate the server the DELETE just pruned. A natural exit drops
+			// the instance without setting the terminal flags, so the existing
+			// retry/reinitialize path is preserved.
+			lk.mu.Lock()
+			if p.lookupLive(serverID) == placeholder && !placeholder.creating &&
+				!placeholder.terminating && !placeholder.deleting && !placeholder.detached && !placeholder.closed {
+				if err := placeholder.acquireActivity(); err != nil {
+					lk.mu.Unlock()
+					return nil, err
+				}
+				lk.mu.Unlock()
+				return placeholder, nil
+			}
+			gated := placeholder.terminating || placeholder.deleting || placeholder.detached || placeholder.closed
+			lk.mu.Unlock()
+			if gated {
+				return nil, ErrDeleting
+			}
 			continue
 		}
 		if live.creating {
@@ -339,8 +360,24 @@ func (p *Proxy) acquireForPost(ctx context.Context, lk *lifecycleLock, serverID 
 			}
 			lk.mu.Lock()
 			current := p.lookupLive(serverID)
+			if current != nil && !current.creating &&
+				!current.terminating && !current.deleting && !current.detached && !current.closed {
+				if err := current.acquireActivity(); err != nil {
+					lk.mu.Unlock()
+					return nil, err
+				}
+				lk.mu.Unlock()
+				return current, nil
+			}
+			gated := waited.terminating || waited.deleting || waited.detached || waited.closed
 			createErr := waited.createErr
 			lk.mu.Unlock()
+			// A DELETE that gated the placeholder while this waiter slept wins:
+			// never recreate a server the DELETE just pruned, even after the
+			// global deleting gate cleared.
+			if gated {
+				return nil, ErrDeleting
+			}
 			// A published replacement wins; otherwise the waiter inherits the
 			// failed creation's error instead of retrying it.
 			if current == nil && createErr != nil {

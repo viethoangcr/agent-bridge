@@ -376,17 +376,17 @@ scripts/verify-agents.sh --image agent-bridge:e2e
 
 **RED:**
 
-- [ ] Add image-level assertions for non-root UID/GID, writable HOME, root-owned non-writable binary/dependencies, static target architecture, exact package versions, required env, and no npm cache/source/build toolchain in final layers.
-- [ ] Add HTTP assertions that root remains public, every `/v1/*` route including health requires bearer auth when configured, token checks do not log Authorization, non-loopback startup rejects an empty token unless the explicit unsafe override is `1`, and representative handler-level 404/405/body-limit failures are RFC 9457 problem+json. Do not assert that `net/http` transport parser/header errors use bridge problem JSON.
-- [ ] Assert child environments remove `AGENT_BRIDGE_TOKEN`, `AGENT_BRIDGE_PID_FILE`, `AGENT_BRIDGE_INTERNAL_MOCK_AGENT`, and `AGENT_BRIDGE_ALLOW_INSECURE_REMOTE` while a benign credential-shaped test variable survives; do not print its value.
-- [ ] Exercise ACP, filesystem, process input/output/log, invalid server ID, media negotiation, and redacted stderr behavior primarily through injected small limits. Run each actual 10 MiB/512 MiB/8 KiB compatibility boundary at most once in its owning integration layer, not in repeated/race suites.
-- [ ] Run `go test -race -skip 'TestRealHeartbeat15Seconds' ./...` repeatedly only for fast injected-clock/limit tests; run expensive Docker and real-boundary E2E once per gate. Capture every race/flaky failure before changing code.
+- [x] Add image-level assertions for non-root UID/GID, writable HOME, root-owned non-writable binary/dependencies, static target architecture, exact package versions, required env, and no npm cache/source/build toolchain in final layers.
+- [x] Add HTTP assertions that root remains public, every `/v1/*` route including health requires bearer auth when configured, token checks do not log Authorization, non-loopback startup rejects an empty token unless the explicit unsafe override is `1`, and representative handler-level 404/405/body-limit failures are RFC 9457 problem+json. Do not assert that `net/http` transport parser/header errors use bridge problem JSON.
+- [x] Assert child environments remove `AGENT_BRIDGE_TOKEN`, `AGENT_BRIDGE_PID_FILE`, `AGENT_BRIDGE_INTERNAL_MOCK_AGENT`, and `AGENT_BRIDGE_ALLOW_INSECURE_REMOTE` while a benign credential-shaped test variable survives; do not print its value.
+- [x] Exercise ACP, filesystem, process input/output/log, invalid server ID, media negotiation, and redacted stderr behavior primarily through injected small limits. Run each actual 10 MiB/512 MiB/8 KiB compatibility boundary at most once in its owning integration layer, not in repeated/race suites.
+- [x] Run `go test -race -skip 'TestRealHeartbeat15Seconds' ./...` repeatedly only for fast injected-clock/limit tests; run expensive Docker and real-boundary E2E once per gate. Capture every race/flaky failure before changing code.
 
 **GREEN:**
 
-- [ ] Make the smallest owning-code correction for each demonstrated failure; do not add compatibility routes, retry layers, telemetry, runtime installers, or dependencies.
-- [ ] Ensure request logs contain method, URI, status, and latency but never Authorization or request bodies.
-- [ ] Run `go vet`, full unit/integration tests, race tests, strict shell syntax, image verification, and E2E matrix.
+- [x] Make the smallest owning-code correction for each demonstrated failure; do not add compatibility routes, retry layers, telemetry, runtime installers, or dependencies.
+- [x] Ensure request logs contain method, URI, status, and latency but never Authorization or request bodies.
+- [x] Run `go vet`, full unit/integration tests, race tests, strict shell syntax, image verification, and E2E matrix.
 
 **Verify:**
 

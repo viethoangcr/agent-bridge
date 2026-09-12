@@ -366,19 +366,6 @@ func (c *container) mustHealthy() {
 	}
 }
 
-// stop sends one signal to the container with a bounded stop timeout.
-func (c *container) stop(signal string, timeout time.Duration) {
-	c.t.Helper()
-	seconds := int(timeout / time.Second)
-	if seconds < 0 {
-		seconds = 0
-	}
-	out, err := docker("stop", "-s", signal, "-t", strconv.Itoa(seconds), c.name)
-	if err != nil {
-		c.t.Errorf("docker stop: %v\n%s\n%s", err, out, c.diagnostics())
-	}
-}
-
 // noteSSE records the last sequence delivered over SSE for failure diagnostics.
 func (c *container) noteSSE(seq int64) {
 	c.mu.Lock()

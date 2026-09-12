@@ -128,116 +128,6 @@ func startManagedProcess(t *testing.T, c *container, command string, args []stri
 	return view
 }
 
-// lifecycleProbeScript samples, from inside the container, the HTTP listener,
-// the tracked process IDs, and the PID file. It logs each transition to
-// /workspace/probe.log so shutdown ordering is observable after the container
-// exits; the PID-1 namespace means docker exec after exit cannot report it.
-const lifecycleProbeScript = `
-const fs = require('fs');
-const http = require('http');
-const pids = {
-  managed: parseInt(process.env.MANAGED_PID, 10),
-  child: parseInt(process.env.MANAGED_CHILD, 10),
-  acp: parseInt(process.env.ACP_PID, 10),
-};
-const log = (m) => fs.appendFileSync('/workspace/probe.log', Date.now() + ' ' + m + '\n');
-const seen = {};
-let listenerUp = true;
-log('probe-start');
-const tick = () => {
-  if (listenerUp) {
-    const req = http.get({host: '127.0.0.1', port: 2468, path: '/v1/health', timeout: 50, agent: false, headers: {'Connection': 'close'}}, (res) => res.resume());
-    req.on('error', () => { if (listenerUp) { listenerUp = false; log('listener-down'); } });
-    req.on('timeout', () => req.destroy());
-  }
-  for (const name of Object.keys(pids)) {
-    if (!seen[name] && pids[name] > 1 && !fs.existsSync('/proc/' + pids[name])) {
-      seen[name] = true;
-      log(name + '-gone');
-    }
-  }
-  if (!seen.pidfile && !fs.existsSync('/workspace/bridge.pid')) {
-    seen.pidfile = true;
-    log('pidfile-gone');
-  }
-};
-setInterval(tick, 5);
-tick();
-`
-
-// startLifecycleProbe copies the probe into the running container and launches
-// it detached with the tracked PIDs.
-func startLifecycleProbe(t *testing.T, c *container, pids map[string]int) {
-	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "probe.js")
-	// World-readable: docker cp preserves the host mode and the exec user
-	// (UID 10001) must be able to read the copied script.
-	if err := os.WriteFile(path, []byte(lifecycleProbeScript), 0o644); err != nil {
-		t.Fatalf("write probe: %v", err)
-	}
-	if out, err := docker("cp", path, c.name+":/tmp/probe.js"); err != nil {
-		t.Fatalf("copy probe: %v\n%s", err, out)
-	}
-	args := []string{"exec", "-d"}
-	for _, pair := range [][2]string{
-		{"MANAGED_PID", "managed"},
-		{"MANAGED_CHILD", "child"},
-		{"ACP_PID", "acp"},
-	} {
-		args = append(args, "-e", pair[0]+"="+strconv.Itoa(pids[pair[1]]))
-	}
-	args = append(args, c.name, "node", "/tmp/probe.js")
-	if out, err := docker(args...); err != nil {
-		t.Fatalf("start probe: %v\n%s", err, out)
-	}
-	// Wait until the detached node process has actually started writing, so
-	// the SIGTERM under test cannot race node startup.
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if out, err := docker("exec", c.name, "cat", "/workspace/probe.log"); err == nil && strings.Contains(string(out), "probe-start") {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("lifecycle probe never started\n%s", containerDiagnostics(c.name))
-}
-
-// probeOrder parses the probe log into the ordered event names.
-func probeOrder(log string) []string {
-	var order []string
-	for _, line := range strings.Split(log, "\n") {
-		if fields := strings.Fields(line); len(fields) == 2 {
-			order = append(order, fields[1])
-		}
-	}
-	return order
-}
-
-// assertProcessGoneBeforeExit proves the pre-drain killed every tracked process
-// while the container was still running, and that PID-file removal followed.
-func assertProcessGoneBeforeExit(t *testing.T, order []string) {
-	t.Helper()
-	index := make(map[string]int, len(order))
-	for i, event := range order {
-		if _, ok := index[event]; !ok {
-			index[event] = i
-		}
-	}
-	for _, event := range []string{"listener-down", "managed-gone", "child-gone", "acp-gone"} {
-		if _, ok := index[event]; !ok {
-			t.Fatalf("shutdown probe never observed %s before container exit; event order = %v", event, order)
-		}
-	}
-	if pidfileAt, ok := index["pidfile-gone"]; ok {
-		for _, event := range []string{"managed-gone", "child-gone", "acp-gone"} {
-			if index[event] > pidfileAt {
-				t.Fatalf("PID file removed before %s: order = %v", event, order)
-			}
-		}
-	}
-}
-
 // assertContainerRunning fails when the container is no longer running.
 func assertContainerRunning(t *testing.T, name string) {
 	t.Helper()
@@ -551,10 +441,13 @@ func TestDockerGracefulShutdown(t *testing.T) {
 			t.Fatalf("events before shutdown = %d (status %d)\n%s", len(before), code, c.diagnostics())
 		}
 		lastSeq := before[len(before)-1].Seq
-		acpLive, _ := assertServerStatus(t, c, serverID, "idle", true)
-		acpPID := *acpLive.PID
-		managed := startManagedProcess(t, c, "/bin/sh", managedForkArgs("/workspace/sd-child.pid"))
-		managedChild := readPIDFile(t, c.name, "/workspace/sd-child.pid")
+		assertServerStatus(t, c, serverID, "idle", true)
+		// A managed group gives the staged pre-drain real process teardown
+		// work. The exact listener/pre-drain/http/post-drain order and
+		// PID-file-last rule are asserted deterministically with injected
+		// hooks in internal/app's shutdown tests; the direct group cleanup is
+		// asserted in TestDockerDeleteKillsProcessGroup.
+		startManagedProcess(t, c, "/bin/sh", managedForkArgs("/workspace/sd-child.pid"))
 
 		if out, err := docker("exec", c.name, "cat", "/workspace/bridge.pid"); err != nil || strings.TrimSpace(string(out)) == "" {
 			t.Fatalf("PID file missing before shutdown: %v %s", err, out)
@@ -577,12 +470,6 @@ func TestDockerGracefulShutdown(t *testing.T) {
 			}
 		}()
 
-		startLifecycleProbe(t, c, map[string]int{
-			"managed": *managed.PID,
-			"child":   managedChild,
-			"acp":     acpPID,
-		})
-
 		start := time.Now()
 		dockerOrFail(t, "kill", "-s", "TERM", c.name)
 
@@ -603,13 +490,6 @@ func TestDockerGracefulShutdown(t *testing.T) {
 		// PID removal is last: the file must be gone and the DB must reopen
 		// with committed events after the store was checkpointed and closed.
 		dir := copyWorkspace(t, c)
-		probeLog, readErr := os.ReadFile(filepath.Join(dir, "probe.log"))
-		if readErr != nil {
-			t.Fatalf("shutdown probe log missing: %v", readErr)
-		}
-		order := probeOrder(string(probeLog))
-		t.Logf("shutdown event order: %v", order)
-		assertProcessGoneBeforeExit(t, order)
 		if _, statErr := os.Stat(filepath.Join(dir, "bridge.pid")); !errors.Is(statErr, os.ErrNotExist) {
 			t.Fatalf("PID file survived shutdown: %v", statErr)
 		}
