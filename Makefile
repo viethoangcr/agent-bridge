@@ -8,6 +8,7 @@ lint:
 	go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...
 
 build:
+	mkdir -p bin
 	CGO_ENABLED=0 go build -trimpath -o bin/agent-bridge ./cmd/agent-bridge
 
 vuln:

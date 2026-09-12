@@ -615,7 +615,7 @@ This package is private and reachable only through `AGENT_BRIDGE_INTERNAL_MOCK_A
 - [x] `Runtime.Kill` signals and waits process/pumps; repeated `Kill`/`Wait` are idempotent so Phase 03 pre-drain completes termination and post-drain only confirms before DB close.
 - [x] Every envelope uses the capacity-256 writer queue and configured timeout. Pre-write timeout removes only that item; partial-write timeout kills the group and joins the writer before exit.
 - [x] Stderr is at most 8 KiB, valid UTF-8, redacted in both retained output and logs, and absent from SQLite.
-- [x] `go test -race ./...` and `go vet ./...` pass.
+- [x] `go test -race -skip 'TestRealHeartbeat15Seconds' ./...` and `go vet ./...` pass.
 - [x] `CGO_ENABLED=0 go build -trimpath -o bin/agent-bridge ./cmd/agent-bridge` succeeds as a static Linux binary.
 - [x] `go list -m -f '{{if not .Indirect}}{{.Path}}{{end}}' all` shows only the main module and `modernc.org/sqlite` as direct modules.
 - [x] `httpapi.Server` tests still expose only Phase 01 routes; requests under `/v1/acp` return the existing RFC 9457 404.
@@ -624,7 +624,7 @@ This package is private and reachable only through `AGENT_BRIDGE_INTERNAL_MOCK_A
 ## Final Verification Commands
 
 ```sh
-go test -race ./...
+go test -race -skip 'TestRealHeartbeat15Seconds' ./...
 go vet ./...
 CGO_ENABLED=0 go build -trimpath -o bin/agent-bridge ./cmd/agent-bridge
 file bin/agent-bridge

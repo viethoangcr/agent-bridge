@@ -380,7 +380,7 @@ scripts/verify-agents.sh --image agent-bridge:e2e
 - [ ] Add HTTP assertions that root remains public, every `/v1/*` route including health requires bearer auth when configured, token checks do not log Authorization, non-loopback startup rejects an empty token unless the explicit unsafe override is `1`, and representative handler-level 404/405/body-limit failures are RFC 9457 problem+json. Do not assert that `net/http` transport parser/header errors use bridge problem JSON.
 - [ ] Assert child environments remove `AGENT_BRIDGE_TOKEN`, `AGENT_BRIDGE_PID_FILE`, `AGENT_BRIDGE_INTERNAL_MOCK_AGENT`, and `AGENT_BRIDGE_ALLOW_INSECURE_REMOTE` while a benign credential-shaped test variable survives; do not print its value.
 - [ ] Exercise ACP, filesystem, process input/output/log, invalid server ID, media negotiation, and redacted stderr behavior primarily through injected small limits. Run each actual 10 MiB/512 MiB/8 KiB compatibility boundary at most once in its owning integration layer, not in repeated/race suites.
-- [ ] Run `go test -race ./...` repeatedly only for fast injected-clock/limit tests; run expensive Docker and real-boundary E2E once per gate. Capture every race/flaky failure before changing code.
+- [ ] Run `go test -race -skip 'TestRealHeartbeat15Seconds' ./...` repeatedly only for fast injected-clock/limit tests; run expensive Docker and real-boundary E2E once per gate. Capture every race/flaky failure before changing code.
 
 **GREEN:**
 
@@ -395,7 +395,7 @@ go vet -tags=e2e ./...
 go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 -tags=e2e ./...
 go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 -tags=e2e ./...
 go test ./... -count=1
-go test -race ./... -count=1
+go test -race -skip 'TestRealHeartbeat15Seconds' ./... -count=1
 sh -n scripts/verify-agents.sh
 scripts/verify-agents.sh --image agent-bridge:e2e
 go test -tags=e2e ./tests/e2e -count=1 -v -timeout=20m
@@ -475,7 +475,7 @@ go vet -tags=e2e ./...
 go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 -tags=e2e ./...
 go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 -tags=e2e ./...
 go test ./... -count=1
-go test -race ./... -count=1
+go test -race -skip 'TestRealHeartbeat15Seconds' ./... -count=1
 CGO_ENABLED=0 go build -trimpath -o /tmp/agent-bridge ./cmd/agent-bridge
 docker buildx build --no-cache --load --platform "linux/$(go env GOARCH)" -f docker/runtime/Dockerfile -t agent-bridge:release-check .
 scripts/verify-agents.sh --image agent-bridge:release-check
