@@ -173,7 +173,12 @@ func assertStaticTargetBinary(t *testing.T, image string) {
 	t.Helper()
 	readelf, err := exec.LookPath("readelf")
 	if err != nil {
-		t.Skipf("host readelf unavailable: %v", err)
+		// Docker is available here, so only a genuinely non-Linux host may skip
+		// ELF inspection; a Linux host without readelf is a real failure.
+		if runtime.GOOS != "linux" {
+			t.Skipf("host readelf unavailable on %s: %v", runtime.GOOS, err)
+		}
+		t.Fatalf("host readelf unavailable on Linux: %v", err)
 	}
 
 	dir := t.TempDir()
@@ -196,7 +201,10 @@ func assertStaticTargetBinary(t *testing.T, image string) {
 	case "arm64":
 		wantMachine = "AArch64"
 	default:
-		t.Skipf("no target machine mapping for host arch %s", runtime.GOARCH)
+		if runtime.GOOS != "linux" {
+			t.Skipf("no target machine mapping for host arch %s on %s", runtime.GOARCH, runtime.GOOS)
+		}
+		t.Fatalf("no target machine mapping for host arch %s", runtime.GOARCH)
 	}
 
 	header := runHostTool(t, readelf, "-h", binary)

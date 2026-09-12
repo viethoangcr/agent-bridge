@@ -362,6 +362,13 @@ func (p *Proxy) acquireForPost(ctx context.Context, lk *lifecycleLock, serverID 
 			current := p.lookupLive(serverID)
 			if current != nil && !current.creating &&
 				!current.terminating && !current.deleting && !current.detached && !current.closed {
+				// Re-check the requested agent in the same critical section as
+				// the lease so a waiter for a different agent can never be
+				// dispatched to the instance the creation just published.
+				if agent != nil && *agent != "" && *agent != current.agent {
+					lk.mu.Unlock()
+					return nil, ErrAgentConflict
+				}
 				if err := current.acquireActivity(); err != nil {
 					lk.mu.Unlock()
 					return nil, err

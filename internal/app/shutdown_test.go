@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log/slog"
 	"net"
-	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -208,15 +207,27 @@ func TestDrainStageOrdering(t *testing.T) {
 }
 
 // TestServeErrorRunsPostCleanupBeforePIDRemoval asserts the unexpected
-// serve-error path runs the post-drain database cleanup before removing the
-// PID file, matching the cancellation path's ordering. The PID file must still
-// exist while the store is being closed and disappear only afterwards.
+// serve-error path enters the same staged shutdown as the cancellation path:
+// listener acceptance already stopped, pre-drain, http Shutdown waiting for
+// handlers, then post-drain database cleanup, with the PID file removed last.
+// A handler is held in Shutdown to prove the post-drain stage cannot run until
+// handler drain completes; the test is channel-driven and never sleeps.
 func TestServeErrorRunsPostCleanupBeforePIDRemoval(t *testing.T) {
 	restore := setShutdownGrace(t, 2*time.Second)
 	defer restore()
 
 	rec := &eventRecorder{}
-	listener := &failingListener{rec: rec, err: errors.New("accept boom")}
+	listener := &fakeCloser{rec: rec}
+	shutdownEntered := make(chan struct{})
+	releaseHandler := make(chan struct{})
+	server := &fakeShutdowner{
+		rec:      rec,
+		serveErr: errors.New("accept boom"),
+		onShutdown: func(context.Context) {
+			close(shutdownEntered)
+			<-releaseHandler
+		},
+	}
 	pidPath := filepath.Join(t.TempDir(), "bridge.pid")
 	if err := os.WriteFile(pidPath, []byte("123\n"), 0o600); err != nil {
 		t.Fatalf("seed pid file: %v", err)
@@ -234,13 +245,27 @@ func TestServeErrorRunsPostCleanupBeforePIDRemoval(t *testing.T) {
 		t.Fatalf("add post hook: %v", err)
 	}
 
-	err := serve(context.Background(), listener, &http.Server{Handler: http.NotFoundHandler()},
-		&lifecycle.Registry{}, post, discardLogger(), pidPath)
-	if err == nil {
+	serveErr := make(chan error, 1)
+	go func() {
+		serveErr <- serve(context.Background(), listener, server,
+			&lifecycle.Registry{}, post, discardLogger(), pidPath)
+	}()
+
+	select {
+	case <-shutdownEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("unexpected serve-error path did not enter http handler drain")
+	}
+	if slices.Contains(rec.snapshot(), "database") {
+		t.Fatal("database cleanup ran before handler drain completed")
+	}
+	close(releaseHandler)
+
+	if err := <-serveErr; err == nil {
 		t.Fatal("serve() = nil, want the accept failure surfaced")
 	}
 
-	want := []string{"listener", "database"}
+	want := []string{"listener", "shutdown", "database"}
 	if got := rec.snapshot(); !slices.Equal(got, want) {
 		t.Fatalf("cleanup order = %v, want %v", got, want)
 	}

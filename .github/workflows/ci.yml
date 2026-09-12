@@ -32,6 +32,8 @@ jobs:
         run: test "$(go env GOVERSION)" = go1.26.8
       - name: Detect formatting drift
         run: test -z "$(gofmt -l cmd internal tests)"
+      - name: Detect module tidy drift
+        run: go mod tidy && git diff --exit-code -- go.mod go.sum
       - name: Vet, unit, and race checks
         run: |
           go vet -tags=e2e ./...

@@ -130,6 +130,14 @@ type httpShutdowner interface {
 	Close() error
 }
 
+// httpServer is the full server surface serve drives: Serve to accept
+// connections plus the staged-shutdown primitives. It is an interface so tests
+// can inject a fake that observes handler drain on every exit path.
+type httpServer interface {
+	httpShutdowner
+	Serve(net.Listener) error
+}
+
 // Run starts the agent bridge and blocks until ctx is canceled or a startup or
 // runtime error occurs. The private mock dispatch is checked before any HTTP
 // configuration, listener, or PID-file work, so mock mode never binds a port or
@@ -249,17 +257,17 @@ func runInternalMockAgent(ctx context.Context, io IO) error {
 // then the shared post-drain cleanup under one absolute deadline, always
 // closing the store before removing the PID file. It returns nil after bounded
 // best effort; only an unexpected Serve failure is surfaced.
-func serve(ctx context.Context, ln net.Listener, srv *http.Server, pre, post *lifecycle.Registry, logger *slog.Logger, pidFile string) error {
+func serve(ctx context.Context, ln net.Listener, srv httpServer, pre, post *lifecycle.Registry, logger *slog.Logger, pidFile string) error {
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.Serve(ln) }()
 
 	select {
 	case err := <-serveErr:
-		_ = ln.Close()
-		parent := context.WithoutCancel(ctx)
-		deadline := time.Now().Add(shutdownGrace)
-		shutdownPre(parent, deadline, pre, logger)
-		closePostAndRemovePID(parent, post, logger, deadline, pidFile)
+		// Listener acceptance already stopped because Serve returned. Run the
+		// same staged drain as cancellation: pre-drain, HTTP Shutdown waiting
+		// for handlers, post-drain confirm/commit/checkpoint/close, PID removal
+		// last, all under one absolute deadline.
+		drain(ctx, ln, srv, pre, post, logger, pidFile)
 		if err != nil && !isNormalClose(err) {
 			return fmt.Errorf("http server: %w", err)
 		}
