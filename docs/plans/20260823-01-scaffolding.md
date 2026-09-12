@@ -14,6 +14,7 @@ Create the dependency-free Go 1.26 repository and production server foundation o
 ## Assumptions and Specification References
 
 - `docs/plans/20260815-agent-bridge.md` is authoritative. This plan elaborates its contract but does not replace it.
+- Project ground rules: `docs/references/go-project-layout.md` (structure, ownership, hygiene) and `docs/references/go-coding-standards.md` (coding rules) are binding for all tasks; the specification and phase plans remain authoritative for behavior.
 - Apply the master specification sections **Platform and dependencies**, **Authentication and errors**, **Agent resolution**, **Non-ACP endpoints**, and **Environment, shutdown, and image**.
 - The workspace initially contains only documentation; all code and project conventions are new.
 - The module path is `github.com/viethoangcr/agent-bridge`, matching the repository location.
@@ -389,6 +390,7 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error
 - [ ] Create minimal placeholder documents if absent, then **RED evidence:** run `go test ./internal/projectdocs` and retain failing assertions for missing required commands, environment safety, or repository rules. Missing files alone are setup evidence only.
 - [ ] Write a README skeleton with purpose, current phase status, prerequisites (exactly Go 1.26.8, enforced by `make check`), `make check`, `make build`, environment table, auth/root/health examples, the non-loopback token requirement and unsafe override warning, and a pointer to the authoritative specification. Do not advertise unfinished APIs or the private mock agent.
 - [ ] Write project `AGENTS.md` requiring master-contract precedence, numeric phase order, stdlib plus only `modernc.org/sqlite`, behavioral test-first evidence, injected clocks/limits, `CGO_ENABLED=0`, handler-level RFC 9457 errors, no public mock interface, no runtime installs, and no expansion into excluded features. Also require the pinned `go 1.26.8` toolchain, `gofmt`/`go mod tidy` cleanliness before every commit, and that `make lint` (staticcheck 2026.2.1) and `make vuln` (govulncheck v1.7.0) are green in CI, with dev-time tools run only through pinned `go run ...@version` so `go.mod`/`go.sum` stay dependency-free.
+- [ ] Link `docs/references/go-project-layout.md` and `docs/references/go-coding-standards.md` from `AGENTS.md`, assert both links in the `internal/projectdocs` test, and point README contributors to them.
 - [ ] **GREEN evidence:** Re-run the docs test and record `ok`.
 
 **Verification:** `go test ./internal/projectdocs -count=1 && make check`

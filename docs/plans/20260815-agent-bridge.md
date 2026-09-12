@@ -13,13 +13,14 @@ Reimplement the Rust `sandbox-agent` server core as one static Linux Go binary. 
 
 ## Goal
 
-Deliver `agent-bridge` with client-compatible ACP behavior for Claude Code, Codex, and OpenCode; durable per-sandbox ACP event/session state; and the required process, filesystem, and config APIs. Preserve semantic ACP passthrough: the bridge may compact JSON for JSONL framing and inspect routing/session metadata, but does not normalize or interpret conversation content.
+Deliver `agent-bridge` with client-compatible ACP behavior for Claude Code, Codex, and OpenCode; durable per-sandbox ACP event/session state; and the required process, filesystem, and config APIs. Preserve semantic ACP passthrough: the bridge may compact JSON for JSONL framing and inspect routing/session metadata, but does not normalize or interpret conversation content. Targets ACP protocol version 1 only; the ACP v2 draft is out of scope.
 
 ## Requirements
 
 ### Platform and dependencies
 
 - Linux only; exactly Go 1.26.8 for local and CI builds; `net/http` method/path ServeMux patterns. Methodless same-path route fallbacks are forbidden: Go 1.22+ `ServeMux` panics when they conflict with the root `GET /{$}` pattern (see Phase 01 Task 1.6).
+- All Go implementation follows `docs/references/go-project-layout.md` and `docs/references/go-coding-standards.md`; where they conflict with this specification, this specification wins.
 - Go stdlib plus one external module: pure-Go `modernc.org/sqlite` through `database/sql`. No other production or test modules.
 - Build with `CGO_ENABLED=0` as one static binary. SQLite DB/WAL files are runtime state, not embedded assets.
 - No runtime agent download/install/update code.

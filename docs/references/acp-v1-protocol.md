@@ -1,16 +1,19 @@
 # Reference: ACP v1 Protocol and Supported Coding Agents
 
 **Date:** 2026-09-02
+**Revised:** 2026-09-12
 **Status:** CURRENT
+**Scope:** ACP v1 only. The bridge implements and passes through ACP protocol version 1 (`"protocolVersion": 1`); the ACP v2 draft (published 2026-07-20) is out of scope until it is stable and the specification is revised.
 **Purpose:** Factual baseline for the agent-bridge plans (`docs/plans/`). All bridge behavior claims about ACP must be checked against this document and the sources below.
 
 ## Sources
 
 - Spec: https://agentclientprotocol.com/protocol/v1/{overview,initialization,session-setup,prompt-turn,authentication,transports,schema}
-- Schema: https://github.com/agentclientprotocol/agent-client-protocol/releases/latest/download/schema.json
-- v2 draft migration: https://agentclientprotocol.com/protocol/v2/migration
+- Schema: https://github.com/agentclientprotocol/agent-client-protocol/releases/latest/download/schema.json (latest stable release: schema-v1.21.0, 2026-08-20)
+- TypeScript SDK: https://www.npmjs.com/package/@agentclientprotocol/sdk (latest stable 1.4.0)
+- v2 draft migration: https://agentclientprotocol.com/protocol/v2/migration (awareness only; out of scope)
 - Agents page: https://agentclientprotocol.com/get-started/agents
-- npm registry (verified 2026-09-02)
+- GitHub releases and npm registry: stable `latest` dist-tags only (verified 2026-09-12)
 
 ## 1. Transport and framing
 
@@ -30,8 +33,8 @@
 
 ## 3. Versioning and negotiation
 
-- `protocolVersion` is a single integer (major version only). `"protocolVersion": 1` is stable; `2` is draft.
-- Negotiation: client sends its latest; agent echoes if supported, else returns its own latest; client disconnects if it cannot support the response. Non-breaking features ship as capabilities, not version bumps (v1 gained session/list, resume, close, delete, elicitation, config options, message IDs, usage updates via stabilization announcements).
+- `protocolVersion` is a single integer (major version only). `"protocolVersion": 1` is stable and is the only version this project supports; `2` is draft (published 2026-07-20) and out of scope.
+- Negotiation: client sends its latest; agent echoes if supported, else returns its own latest; client disconnects if it cannot support the response. Non-breaking features ship as capabilities, not version bumps. Stabilized in the v1 line during 2026: config options (Feb), session list/info (Mar), session resume + close (Apr), logout (May), `additionalDirectories` (Jun 1), session delete + message IDs + usage updates (Jun 5), model config category (Jun 24), `$/cancel_request` (Jun 29), boolean config options (Jul 6), elicitation (Jul 22).
 
 ## 4. Method inventory (v1)
 
@@ -42,9 +45,9 @@
 | `initialize` | `protocolVersion`, `clientCapabilities` | `protocolVersion`, `agentCapabilities`, `authMethods[]` | — |
 | `authenticate` | `methodId` | `{}` | `type:"agent"` auth methods only |
 | `logout` | `{}` | `{}` | `agentCapabilities.auth.logout` |
-| `session/new` | `cwd` (absolute), `mcpServers` | `sessionId`, optional `modes` | — |
-| `session/load` | `sessionId`, `cwd`, `mcpServers` | `null` (or `modes`) | `agentCapabilities.loadSession`. **Agent MUST replay the full conversation as `session/update` notifications before responding.** Removed in v2. |
-| `session/resume` | `sessionId`, `cwd` (`mcpServers` optional) | `{}` (optional `modes`) | `sessionCapabilities.resume`. **MUST NOT replay history.** |
+| `session/new` | `cwd` (absolute), `mcpServers`, optional `additionalDirectories` | `sessionId`, optional `modes` | — |
+| `session/load` | `sessionId`, `cwd`, `mcpServers`, optional `additionalDirectories` | `null` (or `modes`) | `agentCapabilities.loadSession`. **Agent MUST replay the full conversation as `session/update` notifications before responding.** Removed in v2. |
+| `session/resume` | `sessionId`, `cwd`, optional `additionalDirectories`, optional `mcpServers` | `{}` (optional `modes`) | `sessionCapabilities.resume`. **MUST NOT replay history.** |
 | `session/prompt` | `sessionId`, `prompt: ContentBlock[]` | `stopReason` (`end_turn`,`max_tokens`,`max_turn_requests`,`refusal`,`cancelled`) | **Response stays pending for the entire turn.** |
 | `session/set_mode` | `sessionId`, `modeId` | `{}` | modes capability |
 | `session/set_config_option` | `sessionId`, `configId`, value | `configOptions[]` | config options |
@@ -52,6 +55,8 @@
 | `session/list` | optional `cursor`, optional `cwd` filter | `sessions[]`, `nextCursor?` | `sessionCapabilities.list` |
 | `session/delete` | `sessionId` | `{}` | `sessionCapabilities.delete` |
 | `session/cancel` (notification) | `sessionId` | none | pending prompt should end with `stopReason:"cancelled"` |
+
+Session lifecycle requests also accept optional absolute `additionalDirectories` (stabilized 2026-06-01); the bridge treats it as opaque passthrough and does not persist or enforce it.
 
 ### Client-implemented (agent → client reverse-calls)
 
@@ -69,12 +74,17 @@
 - `session/update` — `sessionId` + `update` discriminated by `sessionUpdate`: `user_message_chunk`, `agent_message_chunk`, `agent_thought_chunk` (optional `messageId`), `tool_call`, `tool_call_update`, `plan`, `available_commands_update`, `current_mode_update`, `config_option_update`, `session_info_update`, `usage_update`.
 - `elicitation/complete` — `elicitationId`.
 
+### Protocol-level notifications (either direction)
+
+- `$/cancel_request` — cancels an outstanding request by `requestId` (stabilized 2026-06-29); the cancelled request normally completes with `-32800 request cancelled`.
+
 **Does not exist in any ACP version:** `session/unload`.
 
 ## 5. cwd / sessionId field map (authoritative for bridge inspection)
 
 - **`cwd` appears only on `session/new`, `session/load`, `session/resume`** (required param), plus optional `cwd` filter on `session/list` and optional per-command cwd on `terminal/create` (agent→client). There is **no per-message cwd** on `session/prompt`, `session/update`, `fs/*`, or permission requests.
 - **`sessionId` is required on every session-scoped message**: `session/prompt`, `session/cancel`, `session/update`, `session/request_permission`, `fs/read_text_file`, `fs/write_text_file`, all `terminal/*`, `session/set_mode`, `session/set_config_option`, `session/close`, `session/delete`, and in the params of `session/new` (response), `session/load`, `session/resume`. `elicitation/create` has no sessionId.
+- `additionalDirectories` (optional, absolute) may accompany `cwd` on `session/new|load|resume` only; `$/cancel_request` carries `requestId`, not `sessionId`.
 - ACP defines no length limits on `sessionId`/`cwd`; any byte caps are bridge policy.
 
 ## 6. Authentication flow
@@ -83,22 +93,31 @@
 - Auth failure surfaces in-band as JSON-RPC error **`-32000 auth_required`** (typically from `session/new` or `session/prompt`); the agent does not exit.
 - `authenticate {methodId}` retries agent-type auth. **Terminal-type auth requires the client to relaunch the agent interactively** (e.g. `ACP_INTERACTIVE_LOGIN=1`, exit 0 = success, then reconnect and re-initialize) — impossible through a headless HTTP bridge that owns spawning.
 
-## 7. Coding agents (verified 2026-09-02)
+## 7. Coding agents (stable versions verified 2026-09-12)
 
 | Agent | Package (current) | Pinned in plans | Binary | Launch | Node | Keyless behavior |
 |---|---|---|---|---|---|---|
 | Claude | `@agentclientprotocol/claude-agent-acp` — **latest 0.76.0 (2026-09-09)** | 0.68.0 (valid, stale) | `claude-agent-acp` | `claude-agent-acp` (no args) | >=22 | `initialize` succeeds; **auth failure surfaces at `session/prompt`** as `-32000` (`RequestError.authRequired()`); expired creds may surface as `-32603`. Bundles Claude Agent SDK (includes Claude Code executable, large). Auth via `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, or `~/.claude`. |
-| Codex | `@agentclientprotocol/codex-acp` — **latest 1.11.0 (2026-09-12)** | 1.3.0 (valid, stale) | `codex-acp` | `codex-acp` (no args) | Node (TS adapter) | Advertises ChatGPT-login + API-key auth methods; **`NO_BROWSER=1` hides browser login (official headless var)**. Auth failure in-band; bundles `@openai/codex` Rust binary (npm dep, `CODEX_PATH` override). |
-| OpenCode | `opencode-ai` — **latest 1.18.30 (2026-09-12)** | 1.18.18 (valid, stale) | `opencode` | **`opencode acp`** (native, no adapter) | none at runtime (Bun-compiled static binary via optionalDependencies + postinstall) | `initialize` and `session/new` succeed without auth; failure at prompt time. `--ignore-scripts` breaks install (postinstall copies the platform binary). |
+| Codex | `@agentclientprotocol/codex-acp` — **latest 1.11.0 (2026-09-09)** | 1.3.0 (valid, stale) | `codex-acp` | `codex-acp` (no args) | Node (TS adapter) | Advertises ChatGPT-login + API-key auth methods; **`NO_BROWSER=1` hides browser login (official headless var)**. Auth failure in-band; bundles `@openai/codex` Rust binary (npm dep, `CODEX_PATH` override). |
+| OpenCode | `opencode-ai` — **latest 1.18.30 (2026-09-09)** | 1.18.18 (valid, stale) | `opencode` | **`opencode acp`** (native, no adapter) | none at runtime (Bun-compiled static binary via optionalDependencies + postinstall) | `initialize` and `session/new` succeed without auth; failure at prompt time. `--ignore-scripts` breaks install (postinstall copies the platform binary). |
 
 - Deprecated predecessors: `@zed-industries/claude-code-acp` (→ 0.16.2), `@zed-industries/codex-acp` (→ 0.16.0). Do not use.
 - Headless env conventions: `NO_BROWSER=1` (official, codex-acp README); `DISABLE_AUTOUPDATER=1`, `CI=true` are Claude Code community conventions, not ACP-official. Writable `HOME` required (`~/.claude`, `CLAUDE_CONFIG_DIR`).
 - Image ≥1GB is expected: Claude SDK bundles the Claude Code executable; Codex bundles the Rust binary; only the matching OpenCode platform optionalDependency downloads.
-- Latest-version values drift and are date-stamped; the pinned plan versions remain deliberate (behavioral stability), and bumping any pin requires re-running the keyless matrix.
+- Latest-version values drift and are date-stamped; the pinned plan versions remain deliberate (behavioral stability), and bumping any pin requires re-running the keyless matrix. When bumping, use the stable `latest` dist-tag; `preview`, `beta`, `next`, `dev`, and snapshot releases are never used.
 
-## 8. v2 draft deltas (awareness only — plans target v1)
+### 7.1 ACP tooling versions (stable, verified 2026-09-12)
 
-`authenticate`/`logout` → `auth/login`/`auth/logout`; **`session/load` removed** (replaced by `session/resume` + `replayFrom`); `session/list`/`close`/`resume` become required baseline; `fs/*` and `terminal/*` client methods removed; `session/set_mode` removed; `session/prompt` responds immediately (stop reason moves to `state_update` notification); `tool_call` variant removed; modes → config options; batching formally allowed. If v2 support is ever added, the bridge's lifecycle enum (`none|new|load|resume`) and its HTTP contract change shape.
+| Component | Stable version | Notes |
+|---|---|---|
+| ACP schema release | schema-v1.21.0 (2026-08-20) | v1 line; the v2 schema exists only as a draft |
+| `@agentclientprotocol/sdk` (TypeScript) | 1.4.0 (2026-08-20) | used by the Claude/Codex adapters; the Rust SDK also reached 1.0 in June 2026 |
+| `claude-agent-acp` dependencies | `@agentclientprotocol/sdk` 1.4.0, `@anthropic-ai/claude-agent-sdk` 0.3.257 | bundles the Claude Code executable |
+| `codex-acp` dependencies | `@agentclientprotocol/sdk` ^1.4.0, `@openai/codex` ^0.153.4 | bundles the Codex binary |
+
+## 8. v2 draft deltas (out of scope; awareness only)
+
+`authenticate`/`logout` → `auth/login`/`auth/logout`; **`session/load` removed** (replaced by `session/resume` + `replayFrom`); `session/list`/`close`/`resume` become required baseline; `fs/*` and `terminal/*` client methods removed; `session/set_mode` removed; `session/prompt` responds immediately (stop reason moves to `state_update` notification); `tool_call` variant removed; modes → config options; batching formally allowed. If v2 support is ever added, the bridge's lifecycle enum (`none|new|load|resume`) and its HTTP contract change shape. v2 is excluded from this project: while it remains draft, no v2 code paths, feature flags, or conditional branches are implemented.
 
 ## 9. Implications for the agent-bridge plans
 
@@ -109,3 +128,5 @@
 5. `session/load` obligates the agent to replay the full conversation as `session/update` before responding — a load through the bridge produces a large persisted-event burst (retention is unbounded until DELETE). The private mock does not replay (acceptable; it makes no conformance promise — E2E must not assert replay from the mock).
 6. Keyless E2E outcomes must match real adapter behavior: Claude errors at prompt (so `session/new` likely succeeds — plain success is the observable keyless outcome), Codex errors in-band with `-32000`; OpenCode succeeds at `session/new` and fails at prompt. Structural auth matching should assert JSON-RPC code `-32000` explicitly.
 7. Rejecting JSON-RPC batch arrays at the HTTP layer is v1-conformant (v1 defines no batching). Record this as a deliberate v1 decision; v2 would require rework.
+8. `$/cancel_request` is forwarded like any other notification (HTTP 202) and is never synthesized by the bridge; the agent normally completes the cancelled request with `-32800`.
+9. Optional `additionalDirectories` on lifecycle requests is preserved by passthrough; the bridge persists only `cwd` and `sessionId` per §5.

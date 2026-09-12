@@ -15,6 +15,7 @@ Build lifecycle ownership and HTTP transport over the Phase 02 ACP store/runtime
 
 - `docs/plans/20260815-agent-bridge.md` is authoritative, especially the sections "Authentication and errors", "ACP HTTP contract", "ACP lifecycle and persistence", "ACP state endpoints and schema", and "Environment, shutdown, and image".
 - `docs/references/acp-v1-protocol.md`: normative ACP v1 field map and keyless/auth implications (§5, §9); all ACP claims must be checked against it.
+- Project ground rules: `docs/references/go-project-layout.md` (structure, ownership, hygiene) and `docs/references/go-coding-standards.md` (coding rules) are binding for all tasks; the specification and phase plans remain authoritative for behavior.
 - Phase 01 plan: `docs/plans/20260823-01-scaffolding.md`. Extend `httpapi.Server` in `internal/httpapi/server.go`; reuse `Problem`, `WriteProblem`, `DecodeJSON`, authentication/logging, `config.Config`, and the lifecycle registry.
 - Phase 02 plan: `docs/plans/20260823-02-acp-persistence-runtime.md`. Consume `internal/acpstore`, `internal/acpruntime`, and `internal/mockagent` directly. Do not create an `internal/acp` package or duplicate their models.
 - Phase 01 already parses agent commands, ACP request timeout, and idle TTL. Phase 02 owns `acpruntime.Resolver`, launch resolution, sanitized agent environment through shared `internal/childenv`, and private mock execution.

@@ -20,6 +20,7 @@ Deliver all `/v1/fs/*` and `/v1/config/{mcp,skills}` routes with deterministic r
 ### Authoritative References
 
 - `docs/plans/20260815-agent-bridge.md`, especially "Platform and dependencies", "Authentication and errors", and "Non-ACP endpoints".
+- Project ground rules: `docs/references/go-project-layout.md` (structure, ownership, hygiene) and `docs/references/go-coding-standards.md` (coding rules) are binding for all tasks; the specification and phase plans remain authoritative for behavior.
 - Rust behavior reference: `/home/viethoangcr/Workspace/github/rivet/sandbox-agent/server/packages/sandbox-agent/src/router/support.rs`, symbols `resolve_fs_path` and `sanitize_relative_path`.
 - Rust handler reference: `/home/viethoangcr/Workspace/github/rivet/sandbox-agent/server/packages/sandbox-agent/src/router.rs`, symbols `get_v1_fs_entries`, `get_v1_fs_file`, `put_v1_fs_file`, `delete_v1_fs_entry`, `post_v1_fs_mkdir`, `post_v1_fs_move`, `get_v1_fs_stat`, `post_v1_fs_upload_batch`, and the config handlers.
 

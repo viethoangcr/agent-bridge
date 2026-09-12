@@ -14,6 +14,7 @@ Add the durable SQLite state layer and complete private stdio ACP subprocess run
 ## Assumptions and Specification References
 
 - `docs/plans/20260815-agent-bridge.md` remains authoritative. This plan depends on the completed Phase 01 repository/config/lifecycle foundation and does not redefine the HTTP contract.
+- Project ground rules: `docs/references/go-project-layout.md` (structure, ownership, hygiene) and `docs/references/go-coding-standards.md` (coding rules) are binding for all tasks; the specification and phase plans remain authoritative for behavior.
 - Apply the master specification sections **Platform and dependencies**, **Authentication and errors**, **ACP HTTP contract** where it defines stdio post outcomes/correlation, **ACP lifecycle and persistence**, **ACP state endpoints and schema**, **Agent resolution**, **Non-ACP endpoints** process-group rule, and **Environment, shutdown, and image**.
 - This plan is independently executable from a clean checkout after completing `docs/plans/20260823-01-scaffolding.md`; no unfinished Phase 03 code is required.
 - Pin `modernc.org/sqlite` v1.57.0, which requires Go 1.25+ and is compatible with the repository's Go 1.26.8 pin, in `go.mod`/`go.sum`; no test-only modules are allowed.
