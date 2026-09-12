@@ -199,20 +199,20 @@ func initialize(t *testing.T, c *container, serverID, agent string) rpcEnvelope
 
 **RED:**
 
-- [ ] Add behavioral Dockerfile contract assertions against a minimal fixture for digest-pinned bases, target args, per-architecture Tini 0.19.0 SHA-256 pins, non-root user, token-safe host defaults, and the `tini -- agent-bridge` entrypoint; retain assertion failures rather than treating a missing Dockerfile as RED.
-- [ ] Resolve current multi-platform manifest digests for the exact `golang:1.26.8-bookworm` builder and Node 24 bookworm-slim runtime images with `docker buildx imagetools inspect`; record architecture support.
-- [ ] Run the planned host build command and retain the expected failure before Dockerfile creation.
+- [x] Add behavioral Dockerfile contract assertions against a minimal fixture for digest-pinned bases, target args, per-architecture Tini 0.19.0 SHA-256 pins, non-root user, token-safe host defaults, and the `tini -- agent-bridge` entrypoint; retain assertion failures rather than treating a missing Dockerfile as RED.
+- [x] Resolve current multi-platform manifest digests for the exact `golang:1.26.8-bookworm` builder and Node 24 bookworm-slim runtime images with `docker buildx imagetools inspect`; record architecture support.
+- [x] Run the planned host build command and retain the expected failure before Dockerfile creation.
 
 **GREEN:**
 
-- [ ] Use `FROM --platform=$BUILDPLATFORM golang:1.26.8-bookworm@sha256:<digest>` (exact tag matching the go.mod patch pin, never a floating `golang:1.26` or `1.26.8` without digest) and compile with `CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags='-s -w' -o /out/agent-bridge ./cmd/agent-bridge`.
-- [ ] Add a disposable target-aware `binary-verify` tooling stage that uses `file`/`readelf` (or equivalent pinned tooling) to reject the wrong ELF architecture, a dynamic interpreter, or `NEEDED` entries. Copy only the verified binary onward; do not retain these tools in runtime.
-- [ ] Cache Go module/build directories with BuildKit mounts while copying `go.mod`/`go.sum` before source for stable layers.
-- [ ] In the digest-pinned Node 24 `agent-deps` stage, set `WORKDIR /opt/agents`, copy `docker/runtime/package.json` and `docker/runtime/package-lock.json` there, and run `npm ci --include=optional`. This makes the committed lock resolve directly to `/opt/agents/node_modules`, matching runtime PATH. Do not use `npm install -g`, `--ignore-scripts`, or runtime installs.
-- [ ] In a digest-pinned build stage, map `TARGETARCH` to the official Tini 0.19.0 static amd64/arm64 release asset, pin each asset's SHA-256 in the Dockerfile, verify it with `sha256sum -c`, and copy only the verified binary to `/usr/bin/tini`; do not install Tini from mutable apt repositories. Use the digest-pinned target-platform Node 24 bookworm-slim runtime stage and remove any package-manager lists in the layer that installs other required exact-version OS packages.
-- [ ] Create fixed UID/GID `10001`, copy `/opt/agents` and `/usr/local/bin/agent-bridge` as root, then switch permanently to that user and `/home/agentbridge`.
-- [ ] Set the required environment, `EXPOSE 2468`, and `ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/agent-bridge"]`. Do not bake a token, default the unsafe remote override, or add a healthcheck that cannot authenticate; operators must supply `AGENT_BRIDGE_TOKEN` because the image host is `0.0.0.0`.
-- [ ] Keep `docker/runtime/Dockerfile.dockerignore` minimal: VCS metadata, local binaries, DB/WAL/PID files, all `node_modules`, and test output only; do not exclude source needed by the root-context build.
+- [x] Use `FROM --platform=$BUILDPLATFORM golang:1.26.8-bookworm@sha256:<digest>` (exact tag matching the go.mod patch pin, never a floating `golang:1.26` or `1.26.8` without digest) and compile with `CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags='-s -w' -o /out/agent-bridge ./cmd/agent-bridge`.
+- [x] Add a disposable target-aware `binary-verify` tooling stage that uses `file`/`readelf` (or equivalent pinned tooling) to reject the wrong ELF architecture, a dynamic interpreter, or `NEEDED` entries. Copy only the verified binary onward; do not retain these tools in runtime.
+- [x] Cache Go module/build directories with BuildKit mounts while copying `go.mod`/`go.sum` before source for stable layers.
+- [x] In the digest-pinned Node 24 `agent-deps` stage, set `WORKDIR /opt/agents`, copy `docker/runtime/package.json` and `docker/runtime/package-lock.json` there, and run `npm ci --include=optional`. This makes the committed lock resolve directly to `/opt/agents/node_modules`, matching runtime PATH. Do not use `npm install -g`, `--ignore-scripts`, or runtime installs.
+- [x] In a digest-pinned build stage, map `TARGETARCH` to the official Tini 0.19.0 static amd64/arm64 release asset, pin each asset's SHA-256 in the Dockerfile, verify it with `sha256sum -c`, and copy only the verified binary to `/usr/bin/tini`; do not install Tini from mutable apt repositories. Use the digest-pinned target-platform Node 24 bookworm-slim runtime stage and remove any package-manager lists in the layer that installs other required exact-version OS packages.
+- [x] Create fixed UID/GID `10001`, copy `/opt/agents` and `/usr/local/bin/agent-bridge` as root, then switch permanently to that user and `/home/agentbridge`.
+- [x] Set the required environment, `EXPOSE 2468`, and `ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/agent-bridge"]`. Do not bake a token, default the unsafe remote override, or add a healthcheck that cannot authenticate; operators must supply `AGENT_BRIDGE_TOKEN` because the image host is `0.0.0.0`.
+- [x] Keep `docker/runtime/Dockerfile.dockerignore` minimal: VCS metadata, local binaries, DB/WAL/PID files, all `node_modules`, and test output only; do not exclude source needed by the root-context build.
 
 **Verify:**
 

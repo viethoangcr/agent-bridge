@@ -1,0 +1,15 @@
+# Minimal build-context exclusions for the runtime image. The context is the
+# repository root, so Go source and reference docs stay included.
+.git
+.gitignore
+bin/
+/agent-bridge
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.pid
+node_modules/
+**/node_modules/
+*.out
+coverage.out

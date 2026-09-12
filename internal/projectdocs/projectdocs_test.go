@@ -252,3 +252,136 @@ func TestRuntimeLockContractRejectsIncompleteFixture(t *testing.T) {
 	}
 	t.Logf("fixture problems detected:\n%s", report)
 }
+
+// runtimeDockerfileStages lists every build stage the runtime image contract
+// requires. A missing stage means target-aware cross-compilation, binary
+// inspection, agent installation, or non-root hardening silently disappears.
+var runtimeDockerfileStages = []string{"bridge-build", "binary-verify", "tini", "agent-deps", "runtime"}
+
+// runtimeTiniSha256 pins the Tini 0.19.0 static release asset checksum per
+// target architecture. A mismatch breaks reproducible, verified PID 1.
+var runtimeTiniSha256 = map[string]string{
+	"amd64": "c5b0666b4cb676901f90dfcb37106783c5fe2077b04590973b885950611b30ee",
+	"arm64": "eae1d3aa50c48fb23b8cbdf4e369d0910dfc538566bfd09df89a774aa84a48b9",
+}
+
+// runtimeDockerfileProblems reports every runtime image contract violation so
+// one run lists all gaps instead of stopping at the first one.
+func runtimeDockerfileProblems(dockerfile []byte) []string {
+	var problems []string
+	add := func(format string, args ...any) {
+		problems = append(problems, fmt.Sprintf(format, args...))
+	}
+	body := string(dockerfile)
+
+	stages := map[string]bool{}
+	froms := 0
+	for _, line := range strings.Split(body, "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) == 0 || !strings.EqualFold(fields[0], "FROM") {
+			continue
+		}
+		froms++
+		if !strings.Contains(line, "@sha256:") {
+			add("FROM line is not digest-pinned: %q", strings.TrimSpace(line))
+		}
+		for i := 0; i+1 < len(fields); i++ {
+			if strings.EqualFold(fields[i], "AS") {
+				stages[fields[i+1]] = true
+			}
+		}
+	}
+	if froms == 0 {
+		add("Dockerfile has no FROM instructions")
+	}
+	for _, stage := range runtimeDockerfileStages {
+		if !stages[stage] {
+			add("Dockerfile is missing stage %q", stage)
+		}
+	}
+
+	for _, fragment := range []string{
+		"ARG TARGETOS",
+		"ARG TARGETARCH",
+		"CGO_ENABLED=0",
+		"GOOS=$TARGETOS",
+		"GOARCH=$TARGETARCH",
+		"-trimpath",
+		"./cmd/agent-bridge",
+		"sha256sum -c",
+		"tini-static-amd64",
+		"tini-static-arm64",
+		"USER 10001:10001",
+		`ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/agent-bridge"]`,
+		"HOME=/home/agentbridge",
+		"AGENT_BRIDGE_HOST=0.0.0.0",
+		"DISABLE_AUTOUPDATER=1",
+		"NO_BROWSER=1",
+		"PATH=/opt/agents/node_modules/.bin",
+		"EXPOSE 2468",
+		"npm ci --include=optional",
+	} {
+		if !strings.Contains(body, fragment) {
+			add("Dockerfile is missing required content %q", fragment)
+		}
+	}
+	for arch, sha := range runtimeTiniSha256 {
+		if !strings.Contains(body, sha) {
+			add("Dockerfile is missing Tini %s sha256 pin %q", arch, sha)
+		}
+	}
+
+	for _, fragment := range []string{
+		"HEALTHCHECK",
+		"AGENT_BRIDGE_TOKEN",
+		"AGENT_BRIDGE_ALLOW_INSECURE_REMOTE",
+		"--ignore-scripts",
+		"npm install -g",
+	} {
+		if strings.Contains(body, fragment) {
+			add("Dockerfile must not contain %q", fragment)
+		}
+	}
+	return problems
+}
+
+// TestRuntimeDockerfileContractRejectsIncompleteFixture proves the contract
+// checker reports violations instead of silently accepting a wrong image.
+func TestRuntimeDockerfileContractRejectsIncompleteFixture(t *testing.T) {
+	fixture := strings.Join([]string{
+		"FROM golang:1.26.8-bookworm AS bridge-build",
+		"USER root",
+		"HEALTHCHECK CMD true",
+		"ENV AGENT_BRIDGE_TOKEN=leaked",
+		"RUN npm ci --ignore-scripts",
+	}, "\n")
+
+	problems := runtimeDockerfileProblems([]byte(fixture))
+	if len(problems) == 0 {
+		t.Fatal("incomplete fixture unexpectedly satisfied the runtime Dockerfile contract")
+	}
+	report := strings.Join(problems, "\n")
+	for _, want := range []string{
+		`FROM line is not digest-pinned: "FROM golang:1.26.8-bookworm AS bridge-build"`,
+		`Dockerfile is missing stage "binary-verify"`,
+		`Dockerfile is missing required content "sha256sum -c"`,
+		"Dockerfile is missing Tini amd64 sha256 pin",
+		`Dockerfile must not contain "HEALTHCHECK"`,
+		`Dockerfile must not contain "AGENT_BRIDGE_TOKEN"`,
+		`Dockerfile must not contain "--ignore-scripts"`,
+	} {
+		if !strings.Contains(report, want) {
+			t.Errorf("fixture report is missing %q\n%s", want, report)
+		}
+	}
+	t.Logf("fixture problems detected:\n%s", report)
+}
+
+// TestRuntimeDockerfileContract locks the digest-pinned, target-aware,
+// non-root runtime image contract.
+func TestRuntimeDockerfileContract(t *testing.T) {
+	dockerfile := readRepoFile(t, filepath.Join("docker", "runtime", "Dockerfile"))
+	for _, problem := range runtimeDockerfileProblems([]byte(dockerfile)) {
+		t.Error(problem)
+	}
+}
