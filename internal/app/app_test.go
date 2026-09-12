@@ -427,6 +427,51 @@ func TestACPPreDrainOrder(t *testing.T) {
 	}
 }
 
+// fakeProcessLifecycle records the process staged-shutdown calls without
+// spawning any group so app hook ordering can be asserted deterministically.
+type fakeProcessLifecycle struct {
+	rec           *eventRecorder
+	blockCalls    atomic.Int32
+	shutdownCalls atomic.Int32
+}
+
+func (f *fakeProcessLifecycle) BlockNew(context.Context) error {
+	f.blockCalls.Add(1)
+	f.rec.add("process-block")
+	return nil
+}
+
+func (f *fakeProcessLifecycle) Shutdown(context.Context) error {
+	f.shutdownCalls.Add(1)
+	f.rec.add("process-shutdown")
+	return nil
+}
+
+// TestProcessLifecycleRegistration proves the process pre-drain blocker runs
+// before the shutdown killer within the pre-drain stage.
+func TestProcessLifecycleRegistration(t *testing.T) {
+	rec := &eventRecorder{}
+	process := &fakeProcessLifecycle{rec: rec}
+	pre := &lifecycle.Registry{}
+	if err := registerProcessShutdown(pre, process); err != nil {
+		t.Fatalf("registerProcessShutdown: %v", err)
+	}
+	if err := pre.Shutdown(context.Background()); err != nil {
+		t.Fatalf("pre.Shutdown: %v", err)
+	}
+
+	want := []string{"process-block", "process-shutdown"}
+	if got := rec.snapshot(); !slices.Equal(got, want) {
+		t.Fatalf("process hook order = %v, want %v", got, want)
+	}
+	if got := process.blockCalls.Load(); got != 1 {
+		t.Fatalf("BlockNew calls = %d, want 1", got)
+	}
+	if got := process.shutdownCalls.Load(); got != 1 {
+		t.Fatalf("Shutdown calls = %d, want 1", got)
+	}
+}
+
 // TestServeErrorRunsACPLifecycle proves an unexpected Serve failure still runs
 // the pre-drain ACP shutdown (stop reaper, close subscriptions, signal-and-wait
 // runtimes) before the post-drain confirmation and database close, all under

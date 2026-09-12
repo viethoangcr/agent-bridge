@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/viethoangcr/agent-bridge/internal/acpstore"
+	"github.com/viethoangcr/agent-bridge/internal/process"
 )
 
 // rootDocsURL is the stable documentation location served by the root endpoint
@@ -21,10 +22,11 @@ const fallbackPattern = "/"
 // Phase 06 owns the final shape once all services exist; NewServer must not
 // construct stores, runtimes, reapers, or other services.
 type Dependencies struct {
-	Token    string
-	Log      *slog.Logger
-	ACP      ACPProxy
-	ACPStore *acpstore.Store
+	Token     string
+	Log       *slog.Logger
+	ACP       ACPProxy
+	ACPStore  *acpstore.Store
+	Processes *process.Manager
 }
 
 // Server owns the Phase 01 route table and the composed HTTP handler. It is
@@ -66,6 +68,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /{$}", s.root)
 	s.mux.HandleFunc("GET /v1/health", s.health)
 	s.registerACPRoutes()
+	s.registerProcessRoutes()
 	s.mux.HandleFunc(fallbackPattern, s.routeFallback)
 }
 
@@ -163,7 +166,13 @@ func cleanPath(p string) string {
 // allowedMethods returns the sorted methods a real (non-fallback) route matches
 // for r's path. Because the methodless fallback matches every method, a probe
 // only counts when mux.Handler returns a pattern other than the fallback's own.
+// Reserved literal paths answer from their exact method allowlist instead, so a
+// wildcard /{id} route or a wrong-method literal binding can never inflate the
+// advertised Allow set.
 func (s *Server) allowedMethods(r *http.Request) []string {
+	if allow, reserved := reservedProcessLiterals[r.URL.Path]; reserved {
+		return allow
+	}
 	var allow []string
 	for _, method := range probeMethods {
 		probe := r.Clone(r.Context())

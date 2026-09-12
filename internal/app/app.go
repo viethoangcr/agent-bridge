@@ -20,10 +20,12 @@ import (
 	"github.com/viethoangcr/agent-bridge/internal/acpproxy"
 	"github.com/viethoangcr/agent-bridge/internal/acpruntime"
 	"github.com/viethoangcr/agent-bridge/internal/acpstore"
+	"github.com/viethoangcr/agent-bridge/internal/childenv"
 	"github.com/viethoangcr/agent-bridge/internal/config"
 	"github.com/viethoangcr/agent-bridge/internal/httpapi"
 	"github.com/viethoangcr/agent-bridge/internal/lifecycle"
 	"github.com/viethoangcr/agent-bridge/internal/mockagent"
+	"github.com/viethoangcr/agent-bridge/internal/process"
 )
 
 // acpLifecycle is the ACP proxy's staged-shutdown surface: the pre-drain hook
@@ -77,6 +79,27 @@ func registerShutdown(pre, post *lifecycle.Registry, closeDB lifecycle.Cleanup, 
 	return nil
 }
 
+// processLifecycle is the process manager's staged-shutdown surface: the
+// pre-drain blocker rejects new starts/runs, and the shutdown hook kills and
+// waits for every process group and pump.
+type processLifecycle interface {
+	BlockNew(context.Context) error
+	Shutdown(context.Context) error
+}
+
+// registerProcessShutdown wires the process manager's staged hooks. The
+// blocker is registered last so it runs first in the reverse-order pre-drain
+// stage, before the killer.
+func registerProcessShutdown(pre *lifecycle.Registry, manager processLifecycle) error {
+	if err := pre.Add("process-shutdown", manager.Shutdown); err != nil {
+		return err
+	}
+	if err := pre.Add("process-block", manager.BlockNew); err != nil {
+		return err
+	}
+	return nil
+}
+
 // IO is the process input/output surface supplied by the command entrypoint.
 // Tests inject buffers so the application never writes to the real process
 // streams directly.
@@ -118,6 +141,13 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error {
 		return err
 	}
 
+	// Capture the bridge startup directory once; managed processes default to
+	// it and child requests cannot replace their sanitized inherited env.
+	startupCWD, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("resolving startup directory: %w", err)
+	}
+
 	logger := slog.New(slog.NewJSONHandler(io.Stderr, &slog.HandlerOptions{Level: cfg.LogLevel}))
 
 	// Open and reconcile durable state before the listener becomes ready so
@@ -149,11 +179,14 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error {
 	proxy := newACPProxy(store, cfg, logger)
 	proxy.StartReaper()
 
+	processManager := process.NewManager(childenv.Sanitized(os.Environ()), startupCWD)
+
 	handler := httpapi.NewServer(httpapi.Dependencies{
-		Token:    cfg.Token,
-		Log:      logger,
-		ACP:      proxy,
-		ACPStore: store,
+		Token:     cfg.Token,
+		Log:       logger,
+		ACP:       proxy,
+		ACPStore:  store,
+		Processes: processManager,
 	}).Handler()
 	srv := &http.Server{
 		Handler:           handler,
@@ -167,6 +200,11 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error {
 		_ = listener.Close()
 		closeStore(ctx, logger, store)
 		return fmt.Errorf("registering shutdown hooks: %w", err)
+	}
+	if err := registerProcessShutdown(pre, processManager); err != nil {
+		_ = listener.Close()
+		closeStore(ctx, logger, store)
+		return fmt.Errorf("registering process shutdown hooks: %w", err)
 	}
 
 	if err := serve(ctx, listener, srv, pre, post, logger, cfg.PIDFile); err != nil {
