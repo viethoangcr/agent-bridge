@@ -413,21 +413,21 @@ go test -tags=e2e ./tests/e2e -count=1 -v -timeout=20m
 
 **RED:**
 
-- [ ] Extend the Phase 01 documentation checklist test with the final public environment variables, agent versions/default commands, required volume paths, remote-token safety, key endpoint families, limits, and staged shutdown semantics; retain behavioral failures for incomplete existing content rather than treating README absence as RED.
-- [ ] Search the intended public text for `mock` and require no match.
+- [x] Extend the Phase 01 documentation checklist test with the final public environment variables, agent versions/default commands, required volume paths, remote-token safety, key endpoint families, limits, and staged shutdown semantics; retain behavioral failures for incomplete existing content rather than treating README absence as RED.
+- [x] Search the intended public text for `mock` and require no match.
 
 **GREEN:**
 
-- [ ] Document host build and `docker buildx` commands, supported `linux/amd64` and `linux/arm64`, expected large image size, non-root user, pinned PID-1 init/subreaper, port 2468, and immutable preinstalled agents.
-- [ ] Document all public environment defaults/overrides, JSON-array agent args, credential inheritance, token behavior including authenticated health probes, PID file, DB persistence, and idle/request timeout controls. State that the image's `0.0.0.0` bind requires `AGENT_BRIDGE_TOKEN`; label `AGENT_BRIDGE_ALLOW_INSECURE_REMOTE=1` unsafe and never use it in deployment examples.
-- [ ] Provide minimal curl examples for health, initialize, SSE, process, filesystem, upload, and whole-object MCP/skills config without exposing private mock behavior.
-- [ ] Explain that ACP content is raw passthrough, one process lives per server ID, DELETE prunes durable state, restart marks stale live servers exited, clients must initialize then load/resume, and retention is unbounded until DELETE.
-- [ ] State that the bridge adds no event-retention subsystem; operators may apply an OS/container volume quota if the accepted unbounded-until-DELETE disk risk needs a hard bound.
-- [ ] Explain keyless outcomes and explicitly defer authenticated prompt/resume E2E; never imply credentials are included in the image.
-- [ ] Document graceful shutdown's one-budget 10-second staged contract and which paths must be mounted for persistence.
-- [ ] Document the headless auth limitation: the bridge does not advertise `clientCapabilities.auth.terminal`, agents may advertise no auth methods, unauthenticated sessions fail in-band with `-32000`, and environment-based credentials are the supported path.
-- [ ] Document the required persistent mounts for resume: agent home directories (`~/.claude`, `~/.codex`, OpenCode state) and the `AGENT_BRIDGE_DB` parent must survive container restarts; a container without them loses resume state.
-- [ ] Update the `GET /` `docs` field to the final public documentation URL chosen in this task and assert it in the documentation checklist test.
+- [x] Document host build and `docker buildx` commands, supported `linux/amd64` and `linux/arm64`, expected large image size, non-root user, pinned PID-1 init/subreaper, port 2468, and immutable preinstalled agents.
+- [x] Document all public environment defaults/overrides, JSON-array agent args, credential inheritance, token behavior including authenticated health probes, PID file, DB persistence, and idle/request timeout controls. State that the image's `0.0.0.0` bind requires `AGENT_BRIDGE_TOKEN`; label `AGENT_BRIDGE_ALLOW_INSECURE_REMOTE=1` unsafe and never use it in deployment examples.
+- [x] Provide minimal curl examples for health, initialize, SSE, process, filesystem, upload, and whole-object MCP/skills config without exposing private mock behavior.
+- [x] Explain that ACP content is raw passthrough, one process lives per server ID, DELETE prunes durable state, restart marks stale live servers exited, clients must initialize then load/resume, and retention is unbounded until DELETE.
+- [x] State that the bridge adds no event-retention subsystem; operators may apply an OS/container volume quota if the accepted unbounded-until-DELETE disk risk needs a hard bound.
+- [x] Explain keyless outcomes and explicitly defer authenticated prompt/resume E2E; never imply credentials are included in the image.
+- [x] Document graceful shutdown's one-budget 10-second staged contract and which paths must be mounted for persistence.
+- [x] Document the headless auth limitation: the bridge does not advertise `clientCapabilities.auth.terminal`, agents may advertise no auth methods, unauthenticated sessions fail in-band with `-32000`, and environment-based credentials are the supported path.
+- [x] Document the required persistent mounts for resume: agent home directories (`~/.claude`, `~/.codex`, OpenCode state) and the `AGENT_BRIDGE_DB` parent must survive container restarts; a container without them loses resume state.
+- [x] Update the `GET /` `docs` field to the final public documentation URL chosen in this task and assert it in the documentation checklist test.
 
 **Verify:**
 
