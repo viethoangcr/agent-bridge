@@ -345,22 +345,22 @@ scripts/verify-agents.sh --image agent-bridge:e2e
 
 **RED:**
 
-- [ ] With an injected clock in owning unit tests, prove idle TTL starts at the idle transition and stale timers cannot reap a newly busy/recreated process. In one Docker check use a short nonzero TTL to assert process-group exit/status/event persistence, then use TTL 0 to assert no reap; do not repeat real timer boundaries in race loops.
-- [ ] Start mock and managed processes that fork children; DELETE/stop/kill each and inspect `/proc/<pid>/stat` while the container is still running. Distinguish missing PIDs from state `Z`: both leaders and descendants must disappear, and a zombie is a failure rather than evidence of cleanup.
-- [ ] Add ACP, managed, and one-shot fixtures whose direct group leader exits while a descendant remains blocked with inherited pipes. Assert each owner immediately SIGKILLs the captured negative PGID before pumps/status/capacity release and Tini reaps the orphan while the container remains running.
-- [ ] Deliberately orphan a short-lived grandchild under the bridge, keep the container running, verify `tini` remains PID 1, and poll `/proc` until the descendant is absent rather than zombie. This specifically proves subreaper behavior independent of container exit cleanup.
-- [ ] Open SSE, start ACP and managed process groups, configure a PID file on the persistent volume, then send Docker SIGTERM.
-- [ ] Assert acceptance stops first; pre-drain closes SSE, stops reapers, and signal-and-wait terminates groups through process reap and pump completion before handler drain; `http.Server.Shutdown` then completes; post-drain idempotently confirms completion, waits any non-process commit work, and checkpoints/closes DB; PID removal is last. Assert container exit 0 within one 10s budget and DB reopens with committed events.
-- [ ] Assert WAL checkpoint behavior by restarting on the same volume and reading state; do not require WAL file absence as the sole correctness signal.
-- [ ] Repeat abrupt SIGKILL followed by restart to prove startup recovery without claiming clean-shutdown guarantees.
-- [ ] Run each test and retain failing logs/process diagnostics before fixes.
+- [x] With an injected clock in owning unit tests, prove idle TTL starts at the idle transition and stale timers cannot reap a newly busy/recreated process. In one Docker check use a short nonzero TTL to assert process-group exit/status/event persistence, then use TTL 0 to assert no reap; do not repeat real timer boundaries in race loops.
+- [x] Start mock and managed processes that fork children; DELETE/stop/kill each and inspect `/proc/<pid>/stat` while the container is still running. Distinguish missing PIDs from state `Z`: both leaders and descendants must disappear, and a zombie is a failure rather than evidence of cleanup.
+- [x] Add ACP, managed, and one-shot fixtures whose direct group leader exits while a descendant remains blocked with inherited pipes. Assert each owner immediately SIGKILLs the captured negative PGID before pumps/status/capacity release and Tini reaps the orphan while the container remains running.
+- [x] Deliberately orphan a short-lived grandchild under the bridge, keep the container running, verify `tini` remains PID 1, and poll `/proc` until the descendant is absent rather than zombie. This specifically proves subreaper behavior independent of container exit cleanup.
+- [x] Open SSE, start ACP and managed process groups, configure a PID file on the persistent volume, then send Docker SIGTERM.
+- [x] Assert acceptance stops first; pre-drain closes SSE, stops reapers, and signal-and-wait terminates groups through process reap and pump completion before handler drain; `http.Server.Shutdown` then completes; post-drain idempotently confirms completion, waits any non-process commit work, and checkpoints/closes DB; PID removal is last. Assert container exit 0 within one 10s budget and DB reopens with committed events.
+- [x] Assert WAL checkpoint behavior by restarting on the same volume and reading state; do not require WAL file absence as the sole correctness signal.
+- [x] Repeat abrupt SIGKILL followed by restart to prove startup recovery without claiming clean-shutdown guarantees.
+- [x] Run each test and retain failing logs/process diagnostics before fixes.
 
 **GREEN:**
 
-- [ ] Fix reaper timer ownership so stale timers cannot kill a newly busy/recreated process.
-- [ ] Ensure all kill paths address negative process-group IDs on Linux and wait for pump goroutines/process reap.
-- [ ] Preserve staged shutdown ownership: close listener acceptance; run pre-drain hooks that close SSE, stop reapers, and signal-and-wait process groups through process reap and pump completion; call `http.Server.Shutdown` to wait handlers; run post-drain hooks only to idempotently confirm process/pump completion, wait non-process commits, and checkpoint/close DB; remove PID last; return exit code 0.
-- [ ] Keep one absolute 10-second outer deadline created from a non-canceled parent. Give every stage a fresh context with that same deadline so remaining time is useful, continue best-effort after bounded errors, and never wait for SSE before pre-drain closes it.
+- [x] Fix reaper timer ownership so stale timers cannot kill a newly busy/recreated process.
+- [x] Ensure all kill paths address negative process-group IDs on Linux and wait for pump goroutines/process reap.
+- [x] Preserve staged shutdown ownership: close listener acceptance; run pre-drain hooks that close SSE, stop reapers, and signal-and-wait process groups through process reap and pump completion; call `http.Server.Shutdown` to wait handlers; run post-drain hooks only to idempotently confirm process/pump completion, wait non-process commits, and checkpoint/close DB; remove PID last; return exit code 0.
+- [x] Keep one absolute 10-second outer deadline created from a non-canceled parent. Give every stage a fresh context with that same deadline so remaining time is useful, continue best-effort after bounded errors, and never wait for SSE before pre-drain closes it.
 
 **Verify:** `go test -tags=e2e ./tests/e2e -run 'TestDocker(IdleReaper|DeleteKillsProcessGroup|InitReapsOrphans|GracefulShutdown)' -count=1 -v -timeout=10m`
 
