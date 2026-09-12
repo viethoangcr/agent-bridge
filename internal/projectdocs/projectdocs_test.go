@@ -622,8 +622,8 @@ func ciWorkflowProblems(body []byte) []string {
 		"--platform linux/amd64,linux/arm64",
 		"--output type=oci",
 		`tar -xOf /tmp/agent-bridge.oci index.json`,
-		`"architecture":"amd64"`,
-		`"architecture":"arm64"`,
+		`/tmp/agent-bridge-index.json`,
+		`{"amd64", "arm64"}`,
 	} {
 		if !strings.Contains(workflow, fragment) {
 			add("ci.yml is missing required multiarch content %q", fragment)

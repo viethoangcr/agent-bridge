@@ -99,5 +99,21 @@ jobs:
           test -s /tmp/agent-bridge.oci
           tar -tf /tmp/agent-bridge.oci
           tar -xOf /tmp/agent-bridge.oci index.json > /tmp/agent-bridge-index.json
-          grep -q '"architecture":"amd64"' /tmp/agent-bridge-index.json
-          grep -q '"architecture":"arm64"' /tmp/agent-bridge-index.json
+          python3 - <<'PY'
+          import json
+
+          with open("/tmp/agent-bridge-index.json") as f:
+              index = json.load(f)
+          arches = {
+              m["platform"]["architecture"]
+              for m in index.get("manifests", [])
+              if m.get("platform")
+          }
+          missing = {"amd64", "arm64"} - arches
+          if missing:
+              raise SystemExit(
+                  "OCI index missing architectures: %s (got %s)"
+                  % (sorted(missing), sorted(arches))
+              )
+          print("OCI manifest architectures:", sorted(arches))
+          PY
