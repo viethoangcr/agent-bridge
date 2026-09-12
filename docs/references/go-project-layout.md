@@ -113,7 +113,8 @@ flowchart LR
 ## 5. Naming and conventions
 
 - Package names are short, lowercase, and underscore-free. Exported types are plain nouns (`Config`, `Store`, `Runtime`, `Proxy`, `Manager`, `Service`).
-- Every exported symbol and every package gets a doc comment; package comments start `// Package foo ...` and live on the package clause (a `doc.go` only when multi-paragraph documentation is needed).
+- Every exported symbol and every package gets a doc comment; package comments start `// Package foo ...` and live immediately above the package clause.
+- Doc comments are the API contract: signatures plus `go doc -all ./internal/<pkg>` must let an agent or reviewer understand a package's types, invariants, ownership, and error semantics without reading implementation bodies. Keep comments contract-level; mechanics stay in the body.
 - Errors: sentinel `ErrX` values for conditions the transport maps; wrap internal failures with `%w` only when callers must inspect them; error strings are lowercase without trailing punctuation and never embed stack traces.
 - Environment variables use the `AGENT_BRIDGE_` prefix. Duration variables end `_MS` and are parsed with checked conversion. `config.Load` is the only interpreter of public configuration variables and receives a `getenv` function; `app` may perform private dispatch and capture `os.Environ` for `childenv.Sanitized`, but services never read mutable environment state.
 - `context.Context` is the first parameter for blocking, cancellable, SQL, HTTP, subprocess, and lifecycle operations; propagate request/root contexts, call every derived cancel function, and never store contexts in structs. Some Phase 05 service methods are intentionally synchronous and context-free.
@@ -124,7 +125,8 @@ flowchart LR
 
 ## 6. File and import conventions
 
-- File names are lowercase and concern-based (`store.go`, `post.go`, `reaper.go`, `runtime_integration_test.go`). Split a file when it holds unrelated concerns; there is no line-count quota.
+- File names are lowercase and concern-based (`store.go`, `post.go`, `reaper.go`, `runtime_integration_test.go`). Split a file when it holds unrelated concerns or a second reason to change; target ~300 lines and treat ~500 lines as a required split. Methods of one type may span files (`session_create.go`, `session_load.go`) since Go permits receivers in any package file; `go doc Type` still lists the complete method set.
+- Package overviews longer than a short paragraph live in `doc.go`, which contains only the package comment, the package clause, and no code; keep exactly one package comment per package.
 - Imports are grouped standard library / external / local, separated by blank lines. `gofmt` does not reorder groups; reviewers enforce this.
 - Functions stay small with early returns; comments explain intent, not mechanics.
 - No `init()` unless unavoidable; construct explicitly in `app` or tests.
