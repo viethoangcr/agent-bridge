@@ -149,17 +149,17 @@ func initialize(t *testing.T, c *container, serverID, agent string) rpcEnvelope
 
 **RED:**
 
-- [ ] Add an app-level integration test with minimal fake services and behavioral assertions that every Phase 02-05 route is reachable through the single `httpapi.Server`, receives the intended dependency, and shares auth/logging middleware.
-- [ ] Add channel-driven lifecycle assertions proving exact order: stop listener acceptance; pre-drain closes SSE, stops reapers, and signal-and-wait terminates ACP/managed groups through process reap and pump completion; `http.Server.Shutdown` waits now-unblocked handlers; post-drain idempotently confirms process/pump completion, waits any non-process commit work, and checkpoints/closes DB; PID removal is last.
-- [ ] Assert an open SSE handler cannot block shutdown because its pre-drain closure occurs before `http.Server.Shutdown`. Inject the absolute deadline and verify all stage contexts share one ten-second deadline and retain only remaining time.
-- [ ] Run focused app/httpapi integration tests and retain failing route/dependency/order assertions. Compilation conflicts or missing symbols may be recorded as setup evidence but do not replace behavioral RED.
+- [x] Add an app-level integration test with minimal fake services and behavioral assertions that every Phase 02-05 route is reachable through the single `httpapi.Server`, receives the intended dependency, and shares auth/logging middleware.
+- [x] Add channel-driven lifecycle assertions proving exact order: stop listener acceptance; pre-drain closes SSE, stops reapers, and signal-and-wait terminates ACP/managed groups through process reap and pump completion; `http.Server.Shutdown` waits now-unblocked handlers; post-drain idempotently confirms process/pump completion, waits any non-process commit work, and checkpoints/closes DB; PID removal is last.
+- [x] Assert an open SSE handler cannot block shutdown because its pre-drain closure occurs before `http.Server.Shutdown`. Inject the absolute deadline and verify all stage contexts share one ten-second deadline and retain only remaining time.
+- [x] Run focused app/httpapi integration tests and retain failing route/dependency/order assertions. Compilation conflicts or missing symbols may be recorded as setup evidence but do not replace behavioral RED.
 
 **GREEN:**
 
-- [ ] Finalize `httpapi.Dependencies` as references to already-constructed services/handlers only. Keep all concrete store, runtime, process supervisor, reaper, and lifecycle construction in `internal/app`.
-- [ ] Compose one route table from Phases 02-05 and remove duplicate phase-local assembly paths only where integration proves they conflict; do not add an alternate router or service locator.
-- [ ] Register explicit pre-drain signal-and-wait process/pump termination and post-drain idempotent confirmation/non-process commit/DB cleanup ownership. Continue best-effort within one absolute ten-second deadline, passing fresh non-canceled contexts with that same deadline to each stage and logging joined bounded errors without changing signal-triggered exit 0.
-- [ ] Resolve integration conflicts before Docker work, then run full unit/race tests with injected clocks and small limits rather than repeated real-duration waits.
+- [x] Finalize `httpapi.Dependencies` as references to already-constructed services/handlers only. Keep all concrete store, runtime, process supervisor, reaper, and lifecycle construction in `internal/app`.
+- [x] Compose one route table from Phases 02-05 and remove duplicate phase-local assembly paths only where integration proves they conflict; do not add an alternate router or service locator.
+- [x] Register explicit pre-drain signal-and-wait process/pump termination and post-drain idempotent confirmation/non-process commit/DB cleanup ownership. Continue best-effort within one absolute ten-second deadline, passing fresh non-canceled contexts with that same deadline to each stage and logging joined bounded errors without changing signal-triggered exit 0.
+- [x] Resolve integration conflicts before Docker work, then run full unit/race tests with injected clocks and small limits rather than repeated real-duration waits.
 
 **Verify:** `go test -race ./internal/app ./internal/httpapi -count=1 && go test ./... -count=1`
 

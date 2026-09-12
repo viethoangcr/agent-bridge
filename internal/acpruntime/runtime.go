@@ -260,13 +260,29 @@ func (r *Runtime) Kill(ctx context.Context) error {
 	}
 }
 
-// waitProcess is the sole cmd.Wait owner. It closes the terminal gate before
-// killing the captured group, stops and joins the writer, and only then joins
-// the pumps and publishes exit.
+// waitProcess is the sole cmd.Wait owner. On Linux it first observes the direct
+// child's exit without reaping it, SIGKILLs the captured negative PGID while
+// the zombie still owns the PID so a descendant holding the inherited pipes
+// cannot delay group teardown, and only then reaps with cmd.Wait so the real
+// exit status is available. Platforms without an unreaped observation keep the
+// reap-then-kill order. Either way it closes the terminal gate before killing
+// the group, stops and joins the writer, then joins the pumps and publishes
+// exit.
 func (r *Runtime) waitProcess() {
-	err := r.cmd.Wait()
-	r.closeTerminal()
-	_ = r.killProcessGroup()
+	var pid int
+	if r.cmd.Process != nil {
+		pid = r.cmd.Process.Pid
+	}
+	var err error
+	if observeExit(pid) {
+		r.closeTerminal()
+		_ = r.killProcessGroup()
+		err = r.cmd.Wait()
+	} else {
+		err = r.cmd.Wait()
+		r.closeTerminal()
+		_ = r.killProcessGroup()
+	}
 	r.stopWriter()
 	r.closeStdin()
 	r.awaitWriterStopped()
