@@ -118,7 +118,7 @@ type IO struct {
 func Run(ctx context.Context, getenv func(string) string, io IO) error
 ```
 
-`Run` checks private mock dispatch first, then loads configuration and constructs all services in `internal/app`, starts the listener, writes the PID file, serves HTTP, and coordinates a maximum ten-second graceful shutdown. On cancellation it uses one absolute deadline, independent of the already-canceled run context: close the listener to stop acceptance; invoke pre-drain hooks that close SSE streams, stop reapers, and signal-and-wait termination of ACP/managed process groups, including process reap and pump completion; call `http.Server.Shutdown` so now-unblocked active handlers can finish; invoke post-drain hooks that idempotently confirm process/pump completion, wait any non-process commit work, and checkpoint/close the database; finally remove the PID file. Every stage receives a fresh context with the same remaining absolute deadline, never a new ten-second budget. Phase 01 implements and tests the staging seam; Phase 06 finalizes hook ownership for integrated services. Private helpers include `runInternalMockAgent(context.Context, IO) error`, `writePIDFile(string) error`, and `removePIDFile(string) error`.
+`Run` checks private mock dispatch first, then loads configuration and constructs all services in `internal/app`, starts the listener, writes the PID file, serves HTTP, and coordinates a maximum ten-second graceful shutdown. On cancellation it uses one absolute deadline, independent of the already-canceled run context: close the listener to stop acceptance; invoke pre-drain hooks that close SSE streams, stop reapers, and signal-and-wait termination of ACP/managed process groups, including process reap and pump completion; call `http.Server.Shutdown` so now-unblocked active handlers can finish; invoke post-drain hooks that idempotently confirm process/pump completion, wait any non-process commit work, and checkpoint/close the database; finally remove the PID file. Every stage receives a fresh context with the same remaining absolute deadline, never a new ten-second budget. Cleanup errors are logged, but cancellation-driven shutdown returns nil after bounded best effort so SIGINT/SIGTERM exits 0. Phase 01 implements and tests the staging seam; Phase 06 finalizes hook ownership for integrated services. Private helpers include `runInternalMockAgent(context.Context, IO) error`, `writePIDFile(string) error`, and `removePIDFile(string) error`.
 
 ## Test-First Evidence Policy
 
@@ -142,8 +142,8 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error
 
 - [ ] Add `cmd/agent-bridge/main_test.go` asserting the command package is buildable and that cancellation is translated to a clean return through an injected/context-driven app path once implemented.
 - [ ] Add the smallest compilable injected app-run seam, then **RED evidence:** run `go test ./cmd/agent-bridge` and retain the failing cancellation/exit assertion. Any earlier missing-`internal/app` compilation failure is setup evidence only.
-- [ ] Create `go.mod` with `go 1.26.7` (exact latest patch) and a matching `toolchain go1.26.7` directive, the module path above, and no `require` entries; add a repository-root `.tool-versions` pinning `golang 1.26.7`; add `main.go` using `signal.NotifyContext` for `os.Interrupt` and `syscall.SIGTERM`, invoking `app.Run` once and exiting nonzero only for a returned startup/runtime error. The patch is pinned deliberately because Go 1.26.1-1.26.7 carry security fixes; CI resolves the toolchain via `go-version-file: go.mod`. The `go` directive is a floor, not a selector, and toolchain switching never downgrades: Go 1.27 (released alongside 1.26.7) would silently change `encoding/json` internals, so `.tool-versions` + the README must document that local builds use exactly 1.26.7.
-- [ ] Add `Makefile` targets `test`, `lint`, `build`, `vuln`, and `check`; use `CGO_ENABLED=0 go build -trimpath -o bin/agent-bridge ./cmd/agent-bridge`, `go test ./...`, `go vet ./...`, and pinned dev-time tools invoked only through `go run ...@version` so no module dependency is added: `go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...` for `lint` and `go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...` for `vuln`. `check` composes `test`, `lint`, `build`, plus a `gofmt -l .` emptiness assertion and a `go mod tidy` cleanliness assertion (`go mod tidy && git diff --exit-code -- go.mod go.sum`), without other external tools. Once the capture/replay/e2e suites exist (Phase 06), `lint` and `vuln` add `-tags='capture replay e2e'` so tag-gated packages are analyzed on every check instead of silently skipped by `./...`.
+- [ ] Create `go.mod` with `go 1.26.7` (exact latest patch) and a matching `toolchain go1.26.7` directive, the module path above, and no `require` entries; add a repository-root `.tool-versions` pinning `golang 1.26.7`; add `main.go` using `signal.NotifyContext` for `os.Interrupt` and `syscall.SIGTERM`, invoking `app.Run` once and exiting nonzero only for a returned startup/runtime error. Signal-triggered cleanup errors are logged by `app.Run` but return cleanly so signals exit 0. The patch is pinned deliberately because Go 1.26.1-1.26.7 carry security fixes; CI resolves the toolchain via `go-version-file: go.mod`. The `go` directive is a floor, not a selector, and toolchain switching never downgrades: Go 1.27 (released alongside 1.26.7) would silently change `encoding/json` internals, so `.tool-versions` + the README must document that local builds use exactly 1.26.7.
+- [ ] Add `Makefile` targets `test`, `lint`, `build`, `vuln`, and `check`; use `CGO_ENABLED=0 go build -trimpath -o bin/agent-bridge ./cmd/agent-bridge`, `go test ./...`, `go vet ./...`, and pinned dev-time tools invoked only through `go run ...@version` so no module dependency is added: `go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...` for `lint` and `go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...` for `vuln`. `check` starts with the exact-version guard `test "$$(go env GOVERSION)" = go1.26.7`, then composes `test`, `lint`, `build`, a `gofmt -l .` emptiness assertion, and a `go mod tidy` cleanliness assertion (`go mod tidy && git diff --exit-code -- go.mod go.sum`), without other external tools. Once the e2e suite exists (Phase 06), `lint` and `vuln` add `-tags=e2e`; every Go file in a tag-gated package, including tests, must carry that package tag so plain `go test ./...` remains valid.
 - [ ] **GREEN evidence:** Run `go test ./cmd/agent-bridge` and record `ok`; run `CGO_ENABLED=0 go build ./cmd/agent-bridge` and record exit status 0.
 
 **Verification:** `make check`
@@ -247,10 +247,10 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error
 
 **Strict test-first steps:**
 
-- [ ] Test unset-token pass-through; configured-token success; missing, wrong, malformed, empty, duplicate, and wrong-scheme Authorization values; and public root bypass.
+- [ ] Test unset-token pass-through; configured-token success; missing, wrong, malformed, empty, duplicate, wrong-scheme, shorter, and longer Authorization values; and public root bypass. Assert authentication hashes both values with SHA-256 before constant-time comparison rather than comparing variable-length tokens directly.
 - [ ] Assert failures are 401 RFC 9457 responses and do not reflect either supplied or configured token. Assert ACP-looking JSON-RPC bodies do not alter auth failure semantics.
 - [ ] Add a minimal pass-through middleware seam, then **RED evidence:** run `go test ./internal/httpapi -run TestAuthenticate` and retain failing unauthorized-request assertions. Missing-symbol failure is setup evidence only.
-- [ ] Implement exact `Bearer <token>` parsing and compare expected/supplied byte strings with `crypto/subtle.ConstantTimeCompare`; avoid logging or placing Authorization in context.
+- [ ] Implement exact `Bearer <token>` parsing, hash expected and supplied values with `sha256.Sum256`, and pass the equal-length digests to `crypto/subtle.ConstantTimeCompare`; avoid logging or placing Authorization in context.
 - [ ] **GREEN evidence:** Re-run the focused test and record all auth cases passing.
 
 **Verification:** `go test ./internal/httpapi -run TestAuthenticate -count=1`
@@ -356,11 +356,11 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error
 - [ ] Test that `AGENT_BRIDGE_INTERNAL_MOCK_AGENT=1` bypasses invalid HTTP environment configuration, does not bind a port or create a PID file, and returns the temporary phase-boundary error from the private hook.
 - [ ] Test PID mode/content, refusal to replace an existing file, cleanup on context cancellation, no file after bind failure, and no failure when cleanup finds an already-removed file.
 - [ ] Start `Run` against `127.0.0.1` with a test-selected free port; assert health serves, cancel context, assert return within ten seconds, and assert a subsequent bind to the same address succeeds.
-- [ ] Test a registered hook error is logged/returned only after every hook in that stage runs, while context cancellation and expected listener/server closure alone are clean.
+- [ ] Test a registered hook error is logged only after every hook in that stage runs; once cancellation starts shutdown, cleanup errors or deadline expiry do not change the clean return/exit-0 signal contract.
 - [ ] With fakes/channels and an injected shutdown budget/deadline source, assert exact ordering: listener close; pre-drain closes streams/stops reapers and signal-and-wait termination completes process reap and pumps; `http.Server.Shutdown`; post-drain idempotently confirms completion, waits non-process commits, and checkpoints/closes DB; PID removal. Assert an open streaming handler is explicitly closed by pre-drain before `Shutdown` waits, and each stage sees the same absolute deadline with decreasing remaining time rather than a reset budget. Assert that when the injected budget expires during `Shutdown`, the `http.Server.Close` fallback force-closes remaining connections and post-drain still runs.
 - [ ] Add a minimal compilable `Run` lifecycle seam, then **RED evidence:** run `go test ./internal/app` and retain failures for PID lifecycle, remote-auth startup rejection, or staged shutdown ordering. Undefined helpers are setup evidence only.
 - [ ] Implement mode check before `config.Load`; create `slog.Logger`, `net.Listen`, app-owned services, `httpapi.NewServer(...).Handler()`, `http.Server`, and PID file. On cancellation create one ten-second absolute deadline from a non-canceled parent, close the listener, run pre-drain signal-and-wait process termination through pump completion, call `http.Server.Shutdown`, run post-drain idempotent confirmation/non-process commit/DB cleanup, and remove the PID file last. Pass contexts carrying the same deadline to every stage, continue best-effort after bounded errors, and normalize expected listener closure. Configure finite `ReadHeaderTimeout`, `IdleTimeout` (keep-alive connections otherwise linger with no read deadline), and no global write timeout that would break future SSE. If the absolute deadline expires while `Shutdown` is still draining, call `http.Server.Close` to force-close remaining connections, then proceed to post-drain.
-- [ ] Update `main` to treat cancellation-driven clean shutdown as exit 0 and print startup/runtime errors to stderr without dumping configuration or token values.
+- [ ] Update `main` to treat every cancellation-driven bounded shutdown as exit 0; log cleanup failures, and print only pre-shutdown startup/runtime errors to stderr without dumping configuration or token values.
 - [ ] **GREEN evidence:** Run `go test -race ./internal/app -count=10`; retain passing lifecycle/PID assertions and no race output.
 
 **Verification:** `go test -race ./internal/app -count=10 && go test ./...`
@@ -385,7 +385,7 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error
 
 - [ ] Add `internal/projectdocs/projectdocs_test.go` that reads repository-root `README.md`, `AGENTS.md`, and `Makefile`, asserting the documented build/test commands and required Go/static/no-extra-dependency rules exist. Use only standard-library testing.
 - [ ] Create minimal placeholder documents if absent, then **RED evidence:** run `go test ./internal/projectdocs` and retain failing assertions for missing required commands, environment safety, or repository rules. Missing files alone are setup evidence only.
-- [ ] Write a README skeleton with purpose, current phase status, prerequisites (Go 1.26.7+), `make check`, `make build`, environment table, auth/root/health examples, the non-loopback token requirement and unsafe override warning, and a pointer to the authoritative specification. Do not advertise unfinished APIs or the private mock agent.
+- [ ] Write a README skeleton with purpose, current phase status, prerequisites (exactly Go 1.26.7, enforced by `make check`), `make check`, `make build`, environment table, auth/root/health examples, the non-loopback token requirement and unsafe override warning, and a pointer to the authoritative specification. Do not advertise unfinished APIs or the private mock agent.
 - [ ] Write project `AGENTS.md` requiring master-contract precedence, numeric phase order, stdlib plus only `modernc.org/sqlite`, behavioral test-first evidence, injected clocks/limits, `CGO_ENABLED=0`, handler-level RFC 9457 errors, no public mock interface, no runtime installs, and no expansion into excluded features. Also require the pinned `go 1.26.7` toolchain, `gofmt`/`go mod tidy` cleanliness before every commit, and that `make lint` (staticcheck 2026.2.1) and `make vuln` (govulncheck v1.7.0) are green in CI, with dev-time tools run only through pinned `go run ...@version` so `go.mod`/`go.sum` stay dependency-free.
 - [ ] **GREEN evidence:** Re-run the docs test and record `ok`.
 
@@ -414,7 +414,7 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error
 
 ## Phase Deliverables
 
-- A Go 1.26 module with no external dependencies and a `CGO_ENABLED=0` build.
+- An exactly Go 1.26.7 module with no external dependencies and a `CGO_ENABLED=0` build.
 - A validated environment configuration contract ready for later phases.
 - Refusal to expose an unauthenticated non-loopback listener unless the explicit unsafe override is set.
 - A shared `internal/childenv.Sanitized` helper for ACP and managed process children.
@@ -429,7 +429,7 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error
 
 - [ ] Every task has retained RED output demonstrating a behavioral assertion failed against a minimal compilable seam; missing-file/missing-symbol output is not the sole RED evidence.
 - [ ] Every task has retained GREEN output demonstrating its focused verification passed after implementation.
-- [ ] `go mod edit -json` shows Go 1.26.7 and no `require` entries; `go.mod` carries `toolchain go1.26.7` and `.tool-versions` pins `golang 1.26.7`, with README guidance that the `go` directive is a floor and local toolchains must match exactly.
+- [ ] `go mod edit -json` shows Go 1.26.7 and no `require` entries; `go.mod` carries `toolchain go1.26.7`, `.tool-versions` pins `golang 1.26.7`, `make check` rejects any other `go env GOVERSION`, and README requires exactly Go 1.26.7.
 - [ ] `gofmt -l .` is empty and `go mod tidy` produces no `go.mod`/`go.sum` diff.
 - [ ] `go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...` reports no findings.
 - [ ] `go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...` reports no findings (network required; owned by CI).
@@ -447,6 +447,7 @@ func Run(ctx context.Context, getenv func(string) string, io IO) error
 ## Final Verification Commands
 
 ```sh
+test "$(go env GOVERSION)" = go1.26.7
 gofmt -l .
 go mod tidy && git diff --exit-code -- go.mod go.sum
 go vet ./...
