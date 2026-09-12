@@ -453,10 +453,11 @@ func (s *Server) mapACPError(serverID string, err error) Problem {
 		status, detail = http.StatusBadRequest, "invalid ACP envelope"
 	case errors.Is(err, acpproxy.ErrMissingAgent):
 		status, detail = http.StatusBadRequest, "agent is required for a new server"
+	case errors.Is(err, acpproxy.ErrReinitialize):
+		status, detail = http.StatusConflict, "exited server requires initialize"
 	case errors.Is(err, acpruntime.ErrDuplicateID),
 		errors.Is(err, acpproxy.ErrAgentConflict),
 		errors.Is(err, acpproxy.ErrDeleting),
-		errors.Is(err, acpproxy.ErrReinitialize),
 		errors.Is(err, acpstore.ErrDeleted),
 		errors.Is(err, acpstore.ErrConflict):
 		status, detail = http.StatusConflict, "ACP request conflict"

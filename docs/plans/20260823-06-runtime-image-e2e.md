@@ -318,18 +318,18 @@ scripts/verify-agents.sh --image agent-bridge:e2e
 
 **RED:**
 
-- [ ] Create a mock server/session/event sequence on a named volume, capture status/PID/last sequence, and terminate the container without DELETE.
-- [ ] Start a new container against the same volume and assert prior `creating|idle|busy` becomes `exited`, PID is omitted, events/session cwd remain, and no persisted PID is signaled.
-- [ ] Assert a non-`initialize` POST returns 409 with reinitialization guidance; then initialize recreates the process without deleting old events.
-- [ ] Send explicit `session/load` or `session/resume`; prove the bridge does not synthesize/replay prompts and new event sequence continues monotonically.
-- [ ] Reconnect SSE with the old last ID and prove replay/live continuity after restart.
-- [ ] Run the test and record failure before lifecycle fixes.
+- [x] Create a mock server/session/event sequence on a named volume, capture status/PID/last sequence, and terminate the container without DELETE.
+- [x] Start a new container against the same volume and assert prior `creating|idle|busy` becomes `exited`, PID is omitted, events/session cwd remain, and no persisted PID is signaled.
+- [x] Assert a non-`initialize` POST returns 409 with reinitialization guidance; then initialize recreates the process without deleting old events.
+- [x] Send explicit `session/load` or `session/resume`; prove the bridge does not synthesize/replay prompts and new event sequence continues monotonically.
+- [x] Reconnect SSE with the old last ID and prove replay/live continuity after restart.
+- [x] Run the test and record failure before lifecycle fixes.
 
 **GREEN:**
 
-- [ ] Fix startup recovery transaction, stale PID clearing, event sequence allocation, or recreation state in owning persistence/runtime code.
-- [ ] Do not inspect or signal persisted PIDs during startup.
-- [ ] Keep one SQL connection/WAL/foreign keys/5s busy timeout and preserve prune-on-DELETE-only retention.
+- [x] Fix startup recovery transaction, stale PID clearing, event sequence allocation, or recreation state in owning persistence/runtime code.
+- [x] Do not inspect or signal persisted PIDs during startup.
+- [x] Keep one SQL connection/WAL/foreign keys/5s busy timeout and preserve prune-on-DELETE-only retention.
 
 **Verify:** `go test -tags=e2e ./tests/e2e -run TestDockerStateRestart -count=1 -v -timeout=10m`
 
