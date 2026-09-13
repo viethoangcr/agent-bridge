@@ -54,13 +54,19 @@ type acpService interface {
 // Tests inject buffers so the application never writes to the real process
 // streams directly.
 type IO struct {
-	Stdin  io.Reader
+	// Stdin is read by the private mock agent. Run borrows it for the run's
+	// duration and does not close it.
+	Stdin io.Reader
+	// Stdout is written by the private mock agent. Run borrows it for the run's
+	// duration and does not close it.
 	Stdout io.Writer
+	// Stderr receives structured logs. Run borrows it for the run's duration,
+	// does not close it, and requires it to support concurrent writer use.
 	Stderr io.Writer
 }
 
-// Server timeouts. There is deliberately no global WriteTimeout: future SSE
-// responses stream for longer than any finite budget.
+// Server timeouts. There is deliberately no global WriteTimeout because SSE
+// responses may stream longer than any finite budget.
 const (
 	readHeaderTimeout = 10 * time.Second
 	idleTimeout       = 60 * time.Second
@@ -103,10 +109,11 @@ func newACPProxy(store *acpstore.Store, cfg config.Config, logger *slog.Logger) 
 	}, cfg.ACPRequestTimeout, cfg.IdleTTL, logger)
 }
 
-// Run starts the agent bridge and blocks until ctx is canceled or a startup or
-// runtime error occurs. The private mock dispatch is checked before any HTTP
-// configuration, listener, or PID-file work, so mock mode never binds a port or
-// creates a PID file.
+// Run starts the agent bridge and blocks until ctx is canceled or a failure
+// occurs. Cancellation performs bounded cleanup and returns nil; startup and
+// unexpected serving failures are returned. The private mock dispatch is checked
+// before any HTTP configuration, listener, or PID-file work, so mock mode never
+// binds a port or creates a PID file.
 func Run(ctx context.Context, getenv func(string) string, io IO) error {
 	return run(ctx, getenv, io, defaultOptions())
 }

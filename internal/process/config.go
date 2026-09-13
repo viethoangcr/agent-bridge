@@ -124,7 +124,6 @@ func newConfigStore(initial Config) *configStore {
 	return s
 }
 
-// load returns a copy of the active configuration.
 func (s *configStore) load() Config {
 	return *s.current.Load()
 }

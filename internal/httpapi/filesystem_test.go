@@ -16,15 +16,12 @@ import (
 	"github.com/viethoangcr/agent-bridge/internal/filesystem"
 )
 
-// fsHome is the captured HOME plus service used by most filesystem tests.
 type fsHome struct {
 	server *Server
 	files  *filesystem.Service
 	home   string
 }
 
-// newFSServer builds the public handler around a real filesystem service rooted
-// at a temporary HOME.
 func newFSServer(t *testing.T) fsHome {
 	t.Helper()
 	home := t.TempDir()
@@ -35,7 +32,6 @@ func newFSServer(t *testing.T) fsHome {
 	return fsHome{server: NewServer(Dependencies{Files: files}), files: files, home: home}
 }
 
-// doFSRequest drives one request through the public assembly path.
 func doFSRequest(t *testing.T, s *Server, method, target, contentType string, body []byte) *httptest.ResponseRecorder {
 	t.Helper()
 	var reader io.Reader
@@ -51,8 +47,6 @@ func doFSRequest(t *testing.T, s *Server, method, target, contentType string, bo
 	return rec
 }
 
-// fsQuery builds an escaped query string from an ordered key/value list. A
-// value of "\x00" is encoded as a present-but-empty parameter.
 func fsQuery(pairs ...string) string {
 	values := url.Values{}
 	for i := 0; i+1 < len(pairs); i += 2 {
@@ -65,7 +59,6 @@ func fsQuery(pairs ...string) string {
 	return values.Encode()
 }
 
-// writeTree creates parent directories and writes content at an absolute path.
 func writeTree(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-// --- Task 4.5: input, stop, kill, and group semantics ---
-
 // setInputLimit installs a small decoded input limit so boundary behavior can
 // be exercised without allocating multi-megabyte payloads.
 func setInputLimit(t *testing.T, m *Manager, limit int) {

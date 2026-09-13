@@ -132,8 +132,6 @@ func TestRunOpenSSEExitsBeforeHTTPDrain(t *testing.T) {
 	go func() { runErr <- run(ctx, getenv, testIO(), testOptions(5*time.Second)) }()
 	waitForHealthAuth(t, "http://"+addr+"/v1/health", token)
 
-	// Create a live runtime through the private mock agent so the SSE stream
-	// has a server to subscribe to.
 	initReq, err := http.NewRequest(http.MethodPost,
 		"http://"+addr+"/v1/acp/sse?agent=mock",
 		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{}}}`))
@@ -154,7 +152,6 @@ func TestRunOpenSSEExitsBeforeHTTPDrain(t *testing.T) {
 		t.Fatalf("initialize status = %d, want 200", initResp.StatusCode)
 	}
 
-	// Open the SSE stream and wait until response headers prove it is live.
 	sseCtx, sseCancel := context.WithCancel(context.Background())
 	defer sseCancel()
 	sseReq, err := http.NewRequestWithContext(sseCtx, http.MethodGet, "http://"+addr+"/v1/acp/sse", nil)
@@ -194,7 +191,6 @@ func TestRunOpenSSEExitsBeforeHTTPDrain(t *testing.T) {
 		t.Fatalf("SSE Content-Type = %q, want text/event-stream", ct)
 	}
 
-	// Drain the body in the background; its closure is the observable signal.
 	streamClosed := make(chan struct{})
 	go func() {
 		_, _ = io.Copy(io.Discard, sseResp.Body)

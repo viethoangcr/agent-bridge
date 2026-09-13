@@ -21,7 +21,6 @@ const (
 // with a 400 problem.
 var errInvalidEventQuery = errors.New("invalid ACP event query")
 
-// acpServerView is the list element DTO: exactly the documented fields.
 type acpServerView struct {
 	ServerID    string          `json:"serverId"`
 	Agent       string          `json:"agent"`
@@ -55,7 +54,6 @@ type acpEventView struct {
 	CreatedAtMs int64           `json:"createdAtMs"`
 }
 
-// handleACPList returns every durable server ordered by server ID.
 func (s *Server) handleACPList(w http.ResponseWriter, r *http.Request) {
 	if s.deps.ACPStore == nil {
 		writeProblem(w, http.StatusServiceUnavailable, "ACP store is unavailable")
@@ -123,8 +121,6 @@ func (s *Server) handleACPStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, view)
 }
 
-// handleACPEvents returns durable events after an exclusive sequence, filtered
-// and ordered by the strictly parsed query.
 func (s *Server) handleACPEvents(w http.ResponseWriter, r *http.Request) {
 	serverID, ok := s.acpServerID(w, r)
 	if !ok {
@@ -165,8 +161,6 @@ func (s *Server) handleACPEvents(w http.ResponseWriter, r *http.Request) {
 	}{Events: views})
 }
 
-// handleACPDelete terminates and prunes one server, reusing the shared
-// server-ID validation and problem mapping.
 func (s *Server) handleACPDelete(w http.ResponseWriter, r *http.Request) {
 	serverID, ok := s.acpServerID(w, r)
 	if !ok {
@@ -273,7 +267,6 @@ func writeStoreReadProblem(w http.ResponseWriter, err error) {
 	writeProblem(w, http.StatusInternalServerError, "ACP store failure")
 }
 
-// writeJSON emits an application/json response body.
 func writeJSON(w http.ResponseWriter, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)

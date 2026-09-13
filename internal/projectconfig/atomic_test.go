@@ -13,6 +13,7 @@ import (
 	"github.com/viethoangcr/agent-bridge/internal/filesystem"
 )
 
+// TestPutWritesCanonicalMode0600 proves Put writes canonical mode-0600 JSON with no temporary residue.
 func TestPutWritesCanonicalMode0600(t *testing.T) {
 	svc, _ := newTestService(t, "")
 	dir := t.TempDir()
@@ -68,6 +69,7 @@ func assertMode(t *testing.T, path string, want os.FileMode) {
 	}
 }
 
+// TestFailedReplacementPreservesBytes proves a rejected Put leaves the previous file bytes untouched.
 func TestFailedReplacementPreservesBytes(t *testing.T) {
 	svc, _ := newTestService(t, "")
 	dir := t.TempDir()
@@ -93,6 +95,7 @@ func TestFailedReplacementPreservesBytes(t *testing.T) {
 	}
 }
 
+// TestConcurrentPutGetIntegrity proves concurrent Put/Get never observes malformed or partial JSON.
 func TestConcurrentPutGetIntegrity(t *testing.T) {
 	svc, _ := newTestService(t, "")
 	dir := t.TempDir()
@@ -157,6 +160,7 @@ func TestConcurrentPutGetIntegrity(t *testing.T) {
 	assertMode(t, filepath.Join(dir, ".agent-bridge", "config", "mcp.json"), 0o600)
 }
 
+// TestPutDeleteUseSharedMutationMutex proves Put and Delete block on the injected mutation mutex.
 func TestPutDeleteUseSharedMutationMutex(t *testing.T) {
 	ops := []struct {
 		name    string

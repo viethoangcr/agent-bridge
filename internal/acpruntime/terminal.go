@@ -71,8 +71,6 @@ type admissionGate struct {
 	wg     sync.WaitGroup
 }
 
-// enter reports whether a writer admission may proceed. It returns false once
-// the gate is closed.
 func (g *admissionGate) enter() bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -83,21 +81,16 @@ func (g *admissionGate) enter() bool {
 	return true
 }
 
-// leave releases one admitted writer admission.
 func (g *admissionGate) leave() { g.wg.Done() }
 
-// close marks the gate closed; no later enter succeeds.
 func (g *admissionGate) close() {
 	g.mu.Lock()
 	g.closed = true
 	g.mu.Unlock()
 }
 
-// wait blocks until every in-flight admission has left.
 func (g *admissionGate) wait() { g.wg.Wait() }
 
-// terminalClosed reports whether the terminal gate has closed. A runtime built
-// without a terminal channel never reports closed.
 func (r *Runtime) terminalClosed() bool {
 	select {
 	case <-r.terminal:

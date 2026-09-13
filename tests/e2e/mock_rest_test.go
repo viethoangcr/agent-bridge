@@ -32,7 +32,6 @@ func testMockREST(t *testing.T, image string) {
 		t.Fatalf("sessionIds = %v, want [%s %s] sorted", view.SessionIDs, s1, s2)
 	}
 
-	// Attribute events to s1 only.
 	if code, body := prompt(t, c, "alpha", s1, "hello"); code != http.StatusOK {
 		t.Fatalf("prompt = %d: %s", code, body)
 	}
@@ -46,7 +45,6 @@ func testMockREST(t *testing.T, image string) {
 		}
 	}
 
-	// Pagination and ordering.
 	one, code := events(t, c, "alpha", "limit=1")
 	if code != http.StatusOK || len(one) != 1 {
 		t.Fatalf("limit=1 events = %d, want 1", len(one))
@@ -70,7 +68,6 @@ func testMockREST(t *testing.T, image string) {
 		}
 	}
 
-	// Unknown session and unknown server are 404.
 	if _, code := events(t, c, "alpha", "sessionId=nope"); code != http.StatusNotFound {
 		t.Fatalf("unknown session events = %d, want 404", code)
 	}
@@ -78,7 +75,6 @@ func testMockREST(t *testing.T, image string) {
 		t.Fatalf("unknown server events = %d, want 404", code)
 	}
 
-	// DELETE prunes durable state.
 	if resp, body := c.request(http.MethodDelete, "/v1/acp/alpha", nil); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("DELETE = %d: %s", resp.StatusCode, body)
 	}

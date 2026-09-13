@@ -67,7 +67,6 @@ func trimTailToRuneBoundary(buf []byte, limit int) []byte {
 	return buf[start:]
 }
 
-// string returns a copy of the retained tail.
 func (t *stderrTail) string() string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -203,8 +202,6 @@ func (r *Runtime) recordStderrLine(line []byte, newline bool) {
 	r.log.Info("agent stderr", "server_id", r.serverID, "line", logged)
 }
 
-// recordStderrMarker retains and logs the content-free truncation marker for an
-// overlong line whose bytes were discarded.
 func (r *Runtime) recordStderrMarker() {
 	r.recordStderrLine([]byte(stderrTruncatedMarker), true)
 }

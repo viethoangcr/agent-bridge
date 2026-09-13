@@ -7,8 +7,8 @@ import (
 )
 
 // statusWriter wraps a ResponseWriter to capture the final response status for
-// request logging. It preserves http.Flusher so streamed responses (future SSE)
-// keep working through the logging middleware. It never exposes request or
+// request logging. It preserves http.Flusher so streamed responses keep working
+// through the logging middleware. It never exposes request or
 // response headers or bodies to the logger.
 type statusWriter struct {
 	http.ResponseWriter

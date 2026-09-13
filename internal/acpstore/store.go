@@ -1,10 +1,3 @@
-// Package acpstore owns the durable SQLite state for ACP servers, sessions,
-// and events.
-//
-// Open creates the authoritative schema and returns a Store backed by a single
-// configured connection. Persisted agent-output bytes are stored exactly as
-// received after JSONL framing removal; this package never interprets
-// conversation content.
 package acpstore
 
 import (
@@ -18,7 +11,10 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// Store is the durable ACP state database.
+// Store is the durable ACP state database. It is safe for concurrent use and
+// serializes all SQL through a single connection; Close checkpoints and closes
+// the database exactly once. A store method called after Close returns the
+// database/sql closed error.
 type Store struct {
 	db    *sql.DB
 	clock func() time.Time
@@ -27,9 +23,12 @@ type Store struct {
 	closeErr  error
 }
 
-// Open opens (creating when necessary) the SQLite database at path, applies
-// the connection pragmas, and creates the schema. On any partial failure the
-// underlying pool is closed before the error is returned.
+// Open opens (creating when necessary) the SQLite database at path, applies the
+// connection pragmas, and creates the authoritative schema. Persisted
+// agent-output bytes are stored exactly as received after JSONL framing
+// removal; this package never interprets conversation content. A failure to
+// open, ping, or create the schema is returned wrapped with context, and on any
+// partial failure the underlying pool is closed before the error is returned.
 func Open(ctx context.Context, path string) (*Store, error) {
 	db, err := sql.Open("sqlite", dsn(path))
 	if err != nil {

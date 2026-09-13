@@ -7,6 +7,7 @@ import (
 	"github.com/viethoangcr/agent-bridge/internal/childenv"
 )
 
+// TestSanitized proves every bridge-only variable is removed while all other entries keep their order.
 func TestSanitized(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -76,6 +77,7 @@ func TestSanitized(t *testing.T) {
 	}
 }
 
+// TestSanitizedDoesNotAliasInput proves the result shares no backing array with the input in either direction.
 func TestSanitizedDoesNotAliasInput(t *testing.T) {
 	t.Run("mutating output does not affect input", func(t *testing.T) {
 		input := []string{"PATH=/usr/bin", "HOME=/root", "AGENT_BRIDGE_TOKEN=secret"}

@@ -9,10 +9,14 @@ import (
 type Status string
 
 const (
+	// StatusCreating marks a server row inserted but not yet live.
 	StatusCreating Status = "creating"
-	StatusIdle     Status = "idle"
-	StatusBusy     Status = "busy"
-	StatusExited   Status = "exited"
+	// StatusIdle marks a live server waiting for work.
+	StatusIdle Status = "idle"
+	// StatusBusy marks a live server processing a request.
+	StatusBusy Status = "busy"
+	// StatusExited marks a server whose runtime has ended.
+	StatusExited Status = "exited"
 )
 
 // Sentinel errors that the transport layer maps to HTTP statuses.
@@ -62,7 +66,8 @@ type Event struct {
 }
 
 // EventQuery selects events of one server. After is exclusive; a nil SessionID
-// selects every session. A Limit of zero or less returns every matching event.
+// selects every session. A zero Limit returns every matching event; a negative
+// Limit is invalid.
 type EventQuery struct {
 	SessionID *string
 	After     int64

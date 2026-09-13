@@ -47,7 +47,6 @@ func (p *Proxy) StartReaper() {
 	go p.reaperLoop(ctx, ticker, done)
 }
 
-// stopReaper cancels and joins the reaper if it was started. It is idempotent.
 func (p *Proxy) stopReaper() {
 	p.reaperMu.Lock()
 	if !p.reaperStarted {
@@ -66,8 +65,6 @@ func (p *Proxy) stopReaper() {
 	}
 }
 
-// reaperLoop sweeps on every tick and exits on cancellation, stopping its
-// ticker on the way out.
 func (p *Proxy) reaperLoop(ctx context.Context, ticker reaperTicker, done chan struct{}) {
 	defer close(done)
 	defer ticker.Stop()
@@ -81,8 +78,6 @@ func (p *Proxy) reaperLoop(ctx context.Context, ticker reaperTicker, done chan s
 	}
 }
 
-// reapOnce sweeps every live instance once against the injected clock. An idle
-// TTL of zero disables reaping.
 func (p *Proxy) reapOnce(ctx context.Context) {
 	if p.idleTTL <= 0 {
 		return
@@ -198,7 +193,6 @@ func (p *Proxy) reapGatedCurrentLocked(inst *instance) bool {
 	return current == inst && !inst.deleting && !inst.detached && !inst.closed && !inst.creating
 }
 
-// clearTerminating releases the reaper's gate after an abandoned kill.
 func (p *Proxy) clearTerminating(inst *instance) {
 	lk := inst.lock
 	lk.mu.Lock()
@@ -206,8 +200,6 @@ func (p *Proxy) clearTerminating(inst *instance) {
 	lk.mu.Unlock()
 }
 
-// idleExpired reports whether the server's durable idle deadline is at or
-// before now. An unreadable row or any non-idle status is never expired.
 func (p *Proxy) idleExpired(ctx context.Context, serverID string, now time.Time) bool {
 	server, err := p.storeServer(ctx, serverID)
 	if err != nil || server.Status != acpstore.StatusIdle || server.IdleSinceMs == nil {

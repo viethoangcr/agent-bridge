@@ -12,8 +12,7 @@ var reservedProcessLiterals = map[string][]string{
 	"/v1/processes/run":    {http.MethodPost},
 }
 
-// registerProcessRoutes installs the process endpoints on the shared mux. The
-// one-shot run route is added by Task 4.9.
+// registerProcessRoutes installs the process endpoints on the shared mux.
 func (s *Server) registerProcessRoutes() {
 	s.mux.HandleFunc("GET /v1/processes/config", s.handleProcessConfig)
 	s.mux.HandleFunc("POST /v1/processes/config", s.handleProcessConfig)

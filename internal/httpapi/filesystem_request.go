@@ -25,13 +25,11 @@ var errFSBodyTooLarge = errors.New("filesystem request body too large")
 // filesystem query.
 const detailInvalidFilesystemQuery = "invalid filesystem query"
 
-// fsMkdirRequest is the exact `{directory,name}` mkdir body.
 type fsMkdirRequest struct {
 	Directory string `json:"directory"`
 	Name      string `json:"name"`
 }
 
-// fsMoveRequest is the exact `{source,destination}` move body.
 type fsMoveRequest struct {
 	Source      string `json:"source"`
 	Destination string `json:"destination"`

@@ -94,7 +94,7 @@ func acceptsJSONResponse(w http.ResponseWriter, r *http.Request) bool {
 }
 
 // decodeACPEnvelope bounds and reads exactly one JSON object, then validates it
-// through the Phase 02 classifier. It returns the original raw object and the
+// through the envelope classifier. It returns the original raw object and the
 // method (empty for a client response) used only for initialize-only recreation
 // policy. The raw object is never compacted or re-marshalled here.
 func (s *Server) decodeACPEnvelope(w http.ResponseWriter, r *http.Request) (json.RawMessage, string, bool) {
@@ -134,7 +134,7 @@ func parseAgentQuery(r *http.Request) (*string, bool) {
 	return &agent, true
 }
 
-// writeACPError maps a typed Phase 02/acpproxy error to an RFC 9457 problem.
+// writeACPError maps a typed acpproxy error to an RFC 9457 problem.
 // Only known sentinels are interpreted; anything else is a 502 process failure.
 // A 502 carries the already capped and redacted agent stderr tail, when
 // available, as an extension member.

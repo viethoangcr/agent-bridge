@@ -16,7 +16,6 @@ import (
 	"github.com/viethoangcr/agent-bridge/internal/acpstore"
 )
 
-// stateServerID is the durable server exercised across the container restart.
 const stateServerID = "state"
 
 // sentinelRecoveryScript occupies PID $STATE_PID with a long-lived sleep, then
@@ -40,7 +39,7 @@ func TestDockerStateRestart(t *testing.T) {
 		}
 	})
 
-	// Phase 1: build durable state on the named volume, then terminate abruptly
+	// Step 1: build durable state on the named volume, then terminate abruptly
 	// without DELETE so the durable row keeps stale live metadata.
 	first := restartContainer(t, image, token, volume, nil, nil)
 	initialize(t, first, stateServerID, "mock")
@@ -71,7 +70,7 @@ func TestDockerStateRestart(t *testing.T) {
 
 	dockerOrFail(t, "rm", "-f", first.name)
 
-	// Phase 2: restart on the same volume. The persisted PID is occupied by a
+	// Step 2: restart on the same volume. The persisted PID is occupied by a
 	// sentinel before the bridge starts so any startup signal is observable.
 	env := map[string]string{}
 	var entrypoint []string
@@ -111,7 +110,7 @@ func TestDockerStateRestart(t *testing.T) {
 		t.Fatalf("persisted session cwd = %q, want %q", got, mockCWD)
 	}
 
-	// Phase 3: non-initialize is 409 with reinitialization guidance, then
+	// Step 3: non-initialize is 409 with reinitialization guidance, then
 	// initialize recreates without dropping events and keeps the sequence
 	// monotonic.
 	resp, body := second.request(http.MethodPost, acpPath(stateServerID, ""), rpc("stale", "session/prompt", map[string]any{
@@ -137,7 +136,7 @@ func TestDockerStateRestart(t *testing.T) {
 	}
 	reinitSeq := retained[len(retained)-1].Seq
 
-	// Phase 4: session/load is forwarded to the fresh agent, which does not
+	// Step 4: session/load is forwarded to the fresh agent, which does not
 	// know the old session; the bridge neither synthesizes nor replays prompts.
 	code, loadBody := postACP(t, second, stateServerID, "", rpc("load", "session/load", map[string]any{
 		"sessionId": sessionID,
@@ -177,7 +176,7 @@ func TestDockerStateRestart(t *testing.T) {
 		t.Fatalf("old events not retained: first seq %d, want %d", final[0].Seq, before[0].Seq)
 	}
 
-	// Phase 5: reconnect SSE with the pre-restart Last-Event-ID and prove
+	// Step 5: reconnect SSE with the pre-restart Last-Event-ID and prove
 	// replay plus live continuity with no duplicates or gaps.
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -211,8 +210,6 @@ func TestDockerStateRestart(t *testing.T) {
 	}
 }
 
-// assertServerStatus fetches serverID's status and asserts the durable status
-// plus whether a live PID is present.
 func assertServerStatus(t *testing.T, c *container, serverID, wantStatus string, wantPID bool) (statusView, int) {
 	t.Helper()
 	view, code := status(t, c, serverID)
@@ -231,8 +228,6 @@ func assertServerStatus(t *testing.T, c *container, serverID, wantStatus string,
 	return view, code
 }
 
-// assertReinitializeProblem asserts the exact RFC 9457 shape and that the
-// detail instructs the client to reinitialize.
 func assertReinitializeProblem(t *testing.T, contentType string, body []byte) {
 	t.Helper()
 	if !strings.HasPrefix(contentType, "application/problem+json") {

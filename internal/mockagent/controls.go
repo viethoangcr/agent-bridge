@@ -6,8 +6,7 @@ import (
 	"time"
 )
 
-// Private wire-level control hooks used by later-phase integration tests.
-// They are not a public contract.
+// Private wire-level control hooks. They are not a public contract.
 const (
 	methodDelay         = "_mock/delay"
 	methodInvalidStdout = "_mock/invalid_stdout"

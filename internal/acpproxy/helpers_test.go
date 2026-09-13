@@ -286,7 +286,7 @@ func (f *testFactory) lastSpec() acpruntime.LaunchSpec {
 	return f.specs[len(f.specs)-1]
 }
 
-// liveOnCreate simulates Phase 02 Start's creating-to-idle transition.
+// liveOnCreate simulates Start's creating-to-idle transition.
 func liveOnCreate(ctx context.Context, store *acpstore.Store, serverID string, _ acpruntime.LaunchSpec) error {
 	return store.SetLive(ctx, serverID, 4242)
 }

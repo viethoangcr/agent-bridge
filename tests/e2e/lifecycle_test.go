@@ -12,8 +12,6 @@ import (
 	"time"
 )
 
-// containerPID scans /proc inside the container for the first process whose
-// comm equals comm and returns its PID, or 0 when absent.
 func containerPID(t *testing.T, name, comm string) int {
 	t.Helper()
 	script := `for d in /proc/[0-9]*; do if [ "$(cat "$d/comm" 2>/dev/null)" = "$1" ]; then printf '%s\n' "${d##*/}"; exit 0; fi; done; exit 1`
@@ -28,8 +26,6 @@ func containerPID(t *testing.T, name, comm string) int {
 	return pid
 }
 
-// containerDiagnostics reports the container state and a /proc-derived process
-// listing for a failing cleanup assertion.
 func containerDiagnostics(name string) string {
 	inspect, _ := docker("inspect", "--format", "{{json .State}}", name)
 	script := `for d in /proc/[0-9]*; do s=$(cat "$d/stat" 2>/dev/null) || continue; printf '%s %s\n' "${d##*/}" "$s"; done`
@@ -55,8 +51,6 @@ func assertProcessGone(t *testing.T, name string, pid int, desc string) {
 	t.Fatalf("%s: pid %d still present in %s\n%s", desc, pid, name, containerDiagnostics(name))
 }
 
-// readPIDFile polls for path inside the container and returns the decimal PID
-// it holds.
 func readPIDFile(t *testing.T, name, path string) int {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -73,8 +67,6 @@ func readPIDFile(t *testing.T, name, path string) int {
 	return 0
 }
 
-// startManagedProcess starts one managed process and returns its running
-// snapshot.
 func startManagedProcess(t *testing.T, c *container, command string, args []string) processView {
 	t.Helper()
 	body, err := json.Marshal(map[string]any{"command": command, "args": args})
@@ -92,7 +84,6 @@ func startManagedProcess(t *testing.T, c *container, command string, args []stri
 	return view
 }
 
-// assertContainerRunning fails when the container is no longer running.
 func assertContainerRunning(t *testing.T, name string) {
 	t.Helper()
 	out, err := docker("inspect", "--format", "{{.State.Running}}", name)

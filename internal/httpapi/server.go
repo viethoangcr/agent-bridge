@@ -13,45 +13,48 @@ import (
 	"github.com/viethoangcr/agent-bridge/internal/projectconfig"
 )
 
-// rootDocsURL is the final public documentation location served by the root
-// endpoint. It is the repository README anchor asserted by the documentation
-// checklist test.
 const rootDocsURL = "https://github.com/viethoangcr/agent-bridge#readme"
 
-// fallbackPattern is the methodless root pattern that owns 404/405 responses.
 const fallbackPattern = "/"
 
-// Dependencies holds the already-constructed values the HTTP server consumes.
-// Phase 06 owns the final shape once all services exist; NewServer must not
-// construct stores, runtimes, reapers, or other services.
+// Dependencies supplies services borrowed by NewServer. Nil service values make
+// their routes return 503; an empty Token disables /v1 authentication. NewServer
+// does not close dependencies.
 type Dependencies struct {
-	Token     string
-	Log       *slog.Logger
-	ACP       ACPProxy
-	ACPStore  *acpstore.Store
+	// Token is the bearer credential required on /v1/* requests; an empty Token
+	// disables that authentication.
+	Token string
+	// Log receives one structured record per request; a nil Log discards records.
+	Log *slog.Logger
+	// ACP dispatches ACP posts, subscriptions, and deletion; a nil ACP makes
+	// those runtime routes return 503.
+	ACP ACPProxy
+	// ACPStore is the durable ACP state store; a nil ACPStore makes every ACP
+	// state route return 503.
+	ACPStore *acpstore.Store
+	// Processes manages child process groups; a nil Processes makes every
+	// process route return 503.
 	Processes *process.Manager
-	Files     *filesystem.Service
-	Config    *projectconfig.Service
+	// Files serves filesystem routes; a nil Files makes every filesystem route
+	// return 503.
+	Files *filesystem.Service
+	// Config serves project configuration routes; a nil Config makes every
+	// project config route return 503.
+	Config *projectconfig.Service
 }
 
-// Server owns the Phase 01 route table and the composed HTTP handler. It is
-// assembled only through NewServer so every route shares one middleware chain.
+// Server is the immutable HTTP routing surface assembled by NewServer; Handler
+// may serve requests concurrently.
 type Server struct {
 	mux     *http.ServeMux
 	deps    Dependencies
 	handler http.Handler
 
-	// newHeartbeatTicker builds the SSE keep-alive source. Tests replace it
-	// with a fake ticker so no unit test waits for the 15-second interval.
 	newHeartbeatTicker func() heartbeatTicker
 
-	// fsFileLimit and fsUploadLimit bound raw file PUT and upload bodies. They
-	// default to the production 512MiB constants and are overridable in tests.
 	fsFileLimit   int64
 	fsUploadLimit int64
 
-	// configJSONLimit bounds JSON config request bodies. It defaults to the
-	// master 10MiB JSON ceiling and is overridable in tests.
 	configJSONLimit int64
 }
 
@@ -91,14 +94,12 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc(fallbackPattern, s.routeFallback)
 }
 
-// root serves the public root document.
 func (s *Server) root(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"name":"agent-bridge","docs":"` + rootDocsURL + `"}`))
 }
 
-// health serves the authenticated health document.
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -116,12 +117,10 @@ func (s *Server) routeFallback(w http.ResponseWriter, r *http.Request) {
 	s.methodNotAllowed(w, allow)
 }
 
-// notFound emits an RFC 9457 404 for paths no route matches.
 func (s *Server) notFound(w http.ResponseWriter) {
 	writeProblem(w, http.StatusNotFound, detailNotFound)
 }
 
-// methodNotAllowed emits an RFC 9457 405 with a deterministic Allow header.
 func (s *Server) methodNotAllowed(w http.ResponseWriter, allow []string) {
 	w.Header().Set("Allow", strings.Join(allow, ", "))
 	writeProblem(w, http.StatusMethodNotAllowed, "method not allowed")

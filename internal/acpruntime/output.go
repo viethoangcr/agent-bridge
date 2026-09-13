@@ -13,7 +13,6 @@ import (
 )
 
 const (
-	// synthetic notification methods.
 	invalidStdoutMethod = "_adapter/invalid_stdout"
 	agentExitedMethod   = "_adapter/agent_exited"
 )
@@ -142,8 +141,6 @@ func (r *Runtime) commitClassified(out classifiedOutput, entry *pendingRequest) 
 	r.completeResponse(entry, out.Payload)
 }
 
-// append persists one classified output through the injected appendOutput seam
-// or the store. A runtime with neither is a persistence failure.
 func (r *Runtime) append(out classifiedOutput) (acpstore.Event, error) {
 	if r.appendOutput != nil {
 		return r.appendOutput(context.Background(), r.serverID, out.storeOutput())
@@ -169,7 +166,6 @@ func (r *Runtime) signalCommitted() {
 	}
 }
 
-// closeWake closes the wakeup channel exactly once.
 func (r *Runtime) closeWake() {
 	r.wakeMu.Lock()
 	defer r.wakeMu.Unlock()

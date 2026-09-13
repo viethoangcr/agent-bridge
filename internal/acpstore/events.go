@@ -16,7 +16,9 @@ const eventColumns = `server_id, seq, kind, method, payload, session_id, created
 // server's next int64 sequence, inserts the event, applies any successful
 // lifecycle session mutation, and advances the server watermark and timestamp
 // in a single transaction. It returns the event only after that transaction
-// commits.
+// commits. An unknown server is ErrNotFound, invalid output is ErrValidation,
+// and a watermark at math.MaxInt64 is ErrSequenceExhausted. Storage failures
+// are returned wrapped with context.
 func (s *Store) AppendOutput(ctx context.Context, serverID string, output Output) (Event, error) {
 	if !output.valid() {
 		return Event{}, fmt.Errorf("%w: invalid output for server %q", ErrValidation, serverID)
@@ -77,8 +79,10 @@ func (s *Store) AppendOutput(ctx context.Context, serverID string, output Output
 }
 
 // Events returns the events of one server ordered by sequence. After is
-// exclusive; a nil SessionID selects every session, and Limit <= 0 returns
-// every matching event. An unknown server or session filter returns ErrNotFound.
+// exclusive; a nil SessionID selects every session, and a zero Limit returns
+// every matching event. A negative After or Limit is ErrValidation; an unknown
+// server or session filter is ErrNotFound. Storage failures are returned
+// wrapped with context.
 func (s *Store) Events(ctx context.Context, serverID string, q EventQuery) ([]Event, error) {
 	if q.After < 0 {
 		return nil, fmt.Errorf("%w: after must be nonnegative", ErrValidation)

@@ -11,7 +11,7 @@ import (
 
 // registerFilesystemRoutes installs the method-specific filesystem endpoints.
 // No methodless same-path fallbacks are registered, so wrong methods are owned
-// by the Phase 01 root fallback.
+// by the shared root fallback.
 func (s *Server) registerFilesystemRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/fs/entries", s.handleFSEntries)
 	mux.HandleFunc("GET /v1/fs/file", s.handleFSFile)
@@ -23,7 +23,6 @@ func (s *Server) registerFilesystemRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/fs/upload-batch", s.handleFSUploadBatch)
 }
 
-// requireFilesystem rejects requests when no filesystem service was injected.
 func (s *Server) requireFilesystem(w http.ResponseWriter) bool {
 	if s.deps.Files == nil {
 		writeProblem(w, http.StatusServiceUnavailable, "filesystem service is unavailable")
@@ -32,7 +31,6 @@ func (s *Server) requireFilesystem(w http.ResponseWriter) bool {
 	return true
 }
 
-// handleFSEntries lists one directory, defaulting type to all.
 func (s *Server) handleFSEntries(w http.ResponseWriter, r *http.Request) {
 	if !s.requireFilesystem(w) {
 		return
@@ -55,8 +53,6 @@ func (s *Server) handleFSEntries(w http.ResponseWriter, r *http.Request) {
 	}{entries})
 }
 
-// handleFSFile serves GET/HEAD raw file bytes and PUT raw file writes on the
-// shared /v1/fs/file path.
 func (s *Server) handleFSFile(w http.ResponseWriter, r *http.Request) {
 	if !s.requireFilesystem(w) {
 		return
@@ -98,7 +94,6 @@ func (s *Server) handleFSFile(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleFSEntry deletes one file or directory tree, returning 204 empty.
 func (s *Server) handleFSEntry(w http.ResponseWriter, r *http.Request) {
 	if !s.requireFilesystem(w) {
 		return
@@ -114,7 +109,6 @@ func (s *Server) handleFSEntry(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleFSMkdir creates one path component under a directory.
 func (s *Server) handleFSMkdir(w http.ResponseWriter, r *http.Request) {
 	if !s.requireFilesystem(w) {
 		return
@@ -134,7 +128,6 @@ func (s *Server) handleFSMkdir(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, result)
 }
 
-// handleFSMove renames source onto destination, creating destination parents.
 func (s *Server) handleFSMove(w http.ResponseWriter, r *http.Request) {
 	if !s.requireFilesystem(w) {
 		return
@@ -154,7 +147,6 @@ func (s *Server) handleFSMove(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, result)
 }
 
-// handleFSStat returns metadata for one path.
 func (s *Server) handleFSStat(w http.ResponseWriter, r *http.Request) {
 	if !s.requireFilesystem(w) {
 		return
@@ -171,9 +163,6 @@ func (s *Server) handleFSStat(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, stat)
 }
 
-// handleFSUploadBatch validates and merges one gzip-compressed tar archive. Any
-// Content-Type is accepted; excess compressed bytes are 413 and unsafe archives
-// are 400.
 func (s *Server) handleFSUploadBatch(w http.ResponseWriter, r *http.Request) {
 	if !s.requireFilesystem(w) {
 		return

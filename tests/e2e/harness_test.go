@@ -49,25 +49,19 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// repoRoot returns the repository root from this file's location
-// (<root>/tests/e2e/harness_test.go).
 func repoRoot() string {
 	_, file, _, _ := runtime.Caller(0)
 	return filepath.Dir(filepath.Dir(filepath.Dir(file)))
 }
 
-// uniqueSuffix returns a process-unique, test-unique token used for container,
-// volume, and image names.
 func uniqueSuffix() string {
 	return fmt.Sprintf("%d-%d-%d", os.Getpid(), time.Now().UnixNano(), uniqueCounter.Add(1))
 }
 
-// uniqueToken returns a fresh non-empty bearer token for one container.
 func uniqueToken(prefix string) string {
 	return prefix + "-" + uniqueSuffix()
 }
 
-// keep reports whether the operator asked to retain Docker state.
 func keep() bool { return os.Getenv("AGENT_BRIDGE_E2E_KEEP") == "1" }
 
 // buildImage builds the runtime image exactly once per test process with a
@@ -94,12 +88,10 @@ func buildImage(t *testing.T) string {
 	return imageTag
 }
 
-// docker runs docker and returns its combined output.
 func docker(args ...string) ([]byte, error) {
 	return exec.Command("docker", args...).CombinedOutput()
 }
 
-// dockerOrFail runs docker and fails the test on error.
 func dockerOrFail(t *testing.T, args ...string) []byte {
 	t.Helper()
 	out, err := docker(args...)
@@ -258,8 +250,6 @@ func startContainerAllowEmpty(t *testing.T, image, token string, env map[string]
 	})
 }
 
-// discoverPort reads the Docker-assigned host port for the container's 2468
-// binding.
 func (c *container) discoverPort() (string, error) {
 	out, err := docker("port", c.name, containerPort+"/tcp")
 	if err != nil {
@@ -297,8 +287,6 @@ func (c *container) cleanup() {
 	_, _ = docker("rm", "-f", c.name)
 }
 
-// diagnostics reports the container's current logs, inspect state, HTTP status,
-// and last observed SSE sequence for a failing assertion.
 func (c *container) diagnostics() string {
 	c.mu.Lock()
 	logs, inspect := c.logs, c.inspect
@@ -355,14 +343,10 @@ func (c *container) doRequest(method, path string, headers map[string]string, au
 	return resp, data, nil
 }
 
-// do performs one authenticated request and returns the response and body
-// without failing on a non-2xx status.
 func (c *container) do(method, path string, body []byte) (*http.Response, []byte, error) {
 	return c.doRequest(method, path, nil, strings.HasPrefix(path, "/v1/"), body)
 }
 
-// request performs one authenticated request and fails the test on a transport
-// error. It returns the response and body for status assertions.
 func (c *container) request(method, path string, body []byte) (*http.Response, []byte) {
 	c.t.Helper()
 	resp, data, err := c.do(method, path, body)
@@ -372,8 +356,6 @@ func (c *container) request(method, path string, body []byte) (*http.Response, [
 	return resp, data
 }
 
-// getNoAuth performs a GET without a bearer token so tests can prove that
-// /v1/* routes, including health, are authenticated.
 func (c *container) getNoAuth(path string) (*http.Response, []byte) {
 	c.t.Helper()
 	resp, data, err := c.doNoAuth(http.MethodGet, path, nil)
@@ -383,12 +365,10 @@ func (c *container) getNoAuth(path string) (*http.Response, []byte) {
 	return resp, data
 }
 
-// doNoAuth performs one unauthenticated request.
 func (c *container) doNoAuth(method, path string, body []byte) (*http.Response, []byte, error) {
 	return c.doRequest(method, path, nil, false, body)
 }
 
-// rawRequest performs one authenticated request with fully controlled headers.
 func rawRequest(t *testing.T, c *container, method, path string, headers map[string]string, body []byte) (*http.Response, []byte) {
 	t.Helper()
 	resp, data, err := c.doRequest(method, path, headers, true, body)
@@ -426,8 +406,6 @@ func (c *container) waitHealthy(ctx context.Context) error {
 	}
 }
 
-// mustHealthy starts polling and fails the test if the container never becomes
-// healthy within the bounded context.
 func (c *container) mustHealthy() {
 	c.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -437,7 +415,6 @@ func (c *container) mustHealthy() {
 	}
 }
 
-// noteSSE records the last sequence delivered over SSE for failure diagnostics.
 func (c *container) noteSSE(seq int64) {
 	c.mu.Lock()
 	if seq > c.lastSSE {
@@ -446,7 +423,6 @@ func (c *container) noteSSE(seq int64) {
 	c.mu.Unlock()
 }
 
-// copyWorkspace copies the container's /workspace volume into a host temp dir.
 func copyWorkspace(t *testing.T, c *container) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -456,8 +432,6 @@ func copyWorkspace(t *testing.T, c *container) string {
 	return dir
 }
 
-// readProcStat returns the raw /proc/<pid>/stat line inside the container and
-// whether the process still exists.
 func readProcStat(name string, pid int) (string, bool) {
 	out, err := docker("exec", name, "cat", "/proc/"+strconv.Itoa(pid)+"/stat")
 	if err != nil {
@@ -477,8 +451,6 @@ func parseProcState(data string) (byte, bool) {
 	return data[end+2], true
 }
 
-// processState returns the /proc state of pid inside the container and whether
-// the process still exists. A missing process reports ok=false.
 func processState(t *testing.T, name string, pid int) (byte, bool) {
 	t.Helper()
 	stat, ok := readProcStat(name, pid)

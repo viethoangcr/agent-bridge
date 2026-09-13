@@ -190,8 +190,6 @@ func (p *managedProcess) pump(stream string, r io.Reader) {
 	}
 }
 
-// observedExit reports whether pid's exit can be peeked without reaping. It
-// uses the test seam when set and procgroup.ObserveExit otherwise.
 func (m *Manager) observedExit(pid int) bool {
 	if m.observeExit != nil {
 		return m.observeExit(pid)

@@ -12,9 +12,6 @@ import (
 	"testing"
 )
 
-// dockerRunImage runs one command in a disposable container with the image
-// entrypoint overridden. It fails the test on a non-zero exit so a probe can
-// assert success by plain output matching.
 func dockerRunImage(t *testing.T, image string, args ...string) string {
 	t.Helper()
 	base := append([]string{"run", "--rm", "--entrypoint", args[0], image}, args[1:]...)
@@ -25,7 +22,6 @@ func dockerRunImage(t *testing.T, image string, args ...string) string {
 	return string(out)
 }
 
-// imageEnv parses the image's configured environment into key/value pairs.
 func imageEnv(t *testing.T, image string) map[string]string {
 	t.Helper()
 	raw := dockerOrFail(t, "image", "inspect", "--format", "{{json .Config.Env}}", image)
@@ -200,7 +196,6 @@ func assertStaticTargetBinary(t *testing.T, image string) {
 	}
 }
 
-// runHostTool runs a host inspection tool and fails on error.
 func runHostTool(t *testing.T, tool string, args ...string) string {
 	t.Helper()
 	out, err := exec.Command(tool, args...).CombinedOutput()

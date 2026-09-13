@@ -19,7 +19,6 @@ import (
 // mockCWD is a path that is writable by the image's non-root runtime user.
 const mockCWD = "/workspace"
 
-// startMock starts and health-checks a mock-capable bridge container.
 func startMock(t *testing.T, image, token string, env map[string]string) *container {
 	t.Helper()
 	c := startContainer(t, image, token, env, "")
@@ -27,7 +26,6 @@ func startMock(t *testing.T, image, token string, env map[string]string) *contai
 	return c
 }
 
-// sessionNewResult posts session/new and returns its sessionId and echoed cwd.
 func sessionNewResult(t *testing.T, c *container, serverID, cwd string) (string, string) {
 	t.Helper()
 	code, data := postACP(t, c, serverID, "", rpc("session-new", "session/new", map[string]any{"cwd": cwd}))
@@ -48,7 +46,6 @@ func sessionNewResult(t *testing.T, c *container, serverID, cwd string) (string,
 	return result.SessionID, result.CWD
 }
 
-// prompt posts session/prompt synchronously and returns the status and body.
 func prompt(t *testing.T, c *container, serverID, sessionID, text string) (int, []byte) {
 	t.Helper()
 	return postACP(t, c, serverID, "", rpc("prompt", "session/prompt", map[string]any{
@@ -70,7 +67,7 @@ func claudeShellEnv(script string) map[string]string {
 	}
 }
 
-// rpcBody marshal one JSON-RPC 2.0 request, preserving the Go type of id.
+// rpc marshals one JSON-RPC 2.0 request, preserving the Go type of id.
 func rpc(id any, method string, params any) []byte {
 	body, err := json.Marshal(map[string]any{
 		"jsonrpc": "2.0",
@@ -84,15 +81,12 @@ func rpc(id any, method string, params any) []byte {
 	return body
 }
 
-// rpcError is one JSON-RPC error object.
 type rpcError struct {
 	Code    int             `json:"code"`
 	Message string          `json:"message"`
 	Data    json.RawMessage `json:"data,omitempty"`
 }
 
-// rpcEnvelope is the decoded JSON-RPC envelope used by client and agent
-// messages.
 type rpcEnvelope struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      json.RawMessage `json:"id,omitempty"`
@@ -102,7 +96,6 @@ type rpcEnvelope struct {
 	Error   *rpcError       `json:"error,omitempty"`
 }
 
-// decodeEnvelope decodes one JSON-RPC envelope, failing the test on bad JSON.
 func decodeEnvelope(t *testing.T, data []byte) rpcEnvelope {
 	t.Helper()
 	var env rpcEnvelope
@@ -112,7 +105,6 @@ func decodeEnvelope(t *testing.T, data []byte) rpcEnvelope {
 	return env
 }
 
-// acpPath builds the ACP POST path with an optional agent query.
 func acpPath(serverID, agent string) string {
 	path := "/v1/acp/" + serverID
 	if agent != "" {
@@ -121,15 +113,12 @@ func acpPath(serverID, agent string) string {
 	return path
 }
 
-// postACP posts one ACP envelope and returns the raw status and body.
 func postACP(t *testing.T, c *container, serverID, agent string, body []byte) (int, []byte) {
 	t.Helper()
 	resp, data := c.request(http.MethodPost, acpPath(serverID, agent), body)
 	return resp.StatusCode, data
 }
 
-// initialize performs the ACP initialize handshake and returns the response
-// envelope.
 func initialize(t *testing.T, c *container, serverID, agent string) rpcEnvelope {
 	t.Helper()
 	body := rpc("initialize", "initialize", map[string]any{
@@ -143,7 +132,6 @@ func initialize(t *testing.T, c *container, serverID, agent string) rpcEnvelope 
 	return decodeEnvelope(t, data)
 }
 
-// eventView mirrors the persisted event DTO returned by the events endpoint.
 type eventView struct {
 	Seq         int64           `json:"seq"`
 	Kind        string          `json:"kind"`
@@ -153,7 +141,6 @@ type eventView struct {
 	CreatedAtMs int64           `json:"createdAtMs"`
 }
 
-// statusView mirrors the status endpoint DTO.
 type statusView struct {
 	ServerID     string   `json:"serverId"`
 	Agent        string   `json:"agent"`
@@ -165,7 +152,6 @@ type statusView struct {
 	UpdatedAtMs  int64    `json:"updatedAtMs"`
 }
 
-// serverListView mirrors the server-list endpoint DTO.
 type serverListView struct {
 	Servers []struct {
 		ServerID    string `json:"serverId"`
@@ -176,14 +162,12 @@ type serverListView struct {
 	} `json:"servers"`
 }
 
-// processView is the subset of a managed-process snapshot these tests need.
 type processView struct {
 	ID     string `json:"id"`
 	Status string `json:"status"`
 	PID    *int   `json:"pid"`
 }
 
-// problem is the RFC 9457 problem document plus the agentStderr extension.
 type problem struct {
 	Type        string `json:"type"`
 	Title       string `json:"title"`
@@ -192,7 +176,6 @@ type problem struct {
 	AgentStderr string `json:"agentStderr"`
 }
 
-// getJSON performs an authenticated GET and decodes a 200 body into out.
 func getJSON(t *testing.T, c *container, path string, out any) (int, []byte) {
 	t.Helper()
 	resp, data := c.request(http.MethodGet, path, nil)
@@ -204,7 +187,6 @@ func getJSON(t *testing.T, c *container, path string, out any) (int, []byte) {
 	return resp.StatusCode, data
 }
 
-// status fetches one server's status view.
 func status(t *testing.T, c *container, serverID string) (statusView, int) {
 	t.Helper()
 	var view statusView
@@ -212,7 +194,6 @@ func status(t *testing.T, c *container, serverID string) (statusView, int) {
 	return view, code
 }
 
-// events fetches one server's events with an optional query string.
 func events(t *testing.T, c *container, serverID, query string) ([]eventView, int) {
 	t.Helper()
 	var out struct {
@@ -226,7 +207,8 @@ func events(t *testing.T, c *container, serverID, query string) ([]eventView, in
 	return out.Events, code
 }
 
-// waitFor polls cond every 25ms until it is true or the deadline passes.
+// waitFor polls cond until it is true or the deadline passes, giving
+// asynchronous durable-state and container convergence a bounded window.
 func waitFor(t *testing.T, c *container, timeout time.Duration, desc string, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -239,7 +221,6 @@ func waitFor(t *testing.T, c *container, timeout time.Duration, desc string, con
 	t.Fatalf("timed out waiting for %s\n%s", desc, c.diagnostics())
 }
 
-// waitEventMethod polls durable events for the first event carrying method.
 func waitEventMethod(t *testing.T, c *container, serverID, method string, timeout time.Duration) eventView {
 	t.Helper()
 	var found eventView
@@ -259,7 +240,6 @@ func waitEventMethod(t *testing.T, c *container, serverID, method string, timeou
 	return found
 }
 
-// sseEvent is one decoded Server-Sent Events frame.
 type sseEvent struct {
 	Event   string
 	ID      int64
@@ -268,8 +248,6 @@ type sseEvent struct {
 	Text    string
 }
 
-// sseStream decodes one SSE response with support for comments, event, id, and
-// multi-line data fields.
 type sseStream struct {
 	resp    *http.Response
 	scanner *bufio.Scanner
@@ -278,8 +256,6 @@ type sseStream struct {
 	hasField bool
 }
 
-// subscribe opens an authenticated SSE stream, optionally resuming after
-// lastEventID.
 func (c *container) subscribe(ctx context.Context, serverID, lastEventID string) (*sseStream, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/v1/acp/"+serverID, nil)
 	if err != nil {
@@ -306,11 +282,8 @@ func (c *container) subscribe(ctx context.Context, serverID, lastEventID string)
 	return &sseStream{resp: resp, scanner: scanner}, nil
 }
 
-// close releases the underlying connection.
 func (s *sseStream) close() { _ = s.resp.Body.Close() }
 
-// next returns the next frame. Comments are returned immediately with
-// Comment=true. It returns io.EOF when the stream ends normally.
 func (s *sseStream) next() (sseEvent, error) {
 	for s.scanner.Scan() {
 		line := s.scanner.Text()
@@ -350,8 +323,6 @@ func (s *sseStream) next() (sseEvent, error) {
 	return sseEvent{}, io.EOF
 }
 
-// nextMessage returns the next non-comment message frame, recording its
-// sequence for diagnostics.
 func (s *sseStream) nextMessage(c *container) (sseEvent, error) {
 	for {
 		event, err := s.next()
@@ -366,7 +337,6 @@ func (s *sseStream) nextMessage(c *container) (sseEvent, error) {
 	}
 }
 
-// waitComment waits for one comment (heartbeat) frame or the deadline.
 func (s *sseStream) waitComment(timeout time.Duration) (sseEvent, error) {
 	deadline := time.Now().Add(timeout)
 	for {

@@ -22,11 +22,10 @@ const siginfoSize = 128
 // status with Wait afterwards.
 //
 // wait4(2) rejects WNOWAIT with EINVAL on Linux; waitid(2) is the kernel's
-// no-reap observation point, the same one os.Process uses before its Wait.
-//
-// It reports false when the exit cannot be observed without reaping: an
-// invalid pid or a non-child or already reaped pid (ECHILD). The caller then
-// falls back to reaping before the group kill.
+// no-reap observation point, the same one os.Process uses before its Wait. It
+// reports false when the exit cannot be observed without reaping (invalid,
+// non-child, or already reaped pid), and the caller then falls back to reaping
+// before the group kill.
 func ObserveExit(pid int) bool {
 	if pid <= 1 {
 		return false
@@ -46,8 +45,6 @@ func ObserveExit(pid int) bool {
 		)
 		switch {
 		case errno == 0:
-			// WEXITED reports terminated children only, so a successful
-			// waitid means the child has exited and is still waitable.
 			return true
 		case errno == syscall.EINTR:
 			continue

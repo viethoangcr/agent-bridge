@@ -15,10 +15,10 @@ import (
 // Missing parents are created; created files are mode 0644 subject to umask.
 //
 // Only a regular file is replaced. Lstat immediately before the rename rejects
-// an existing directory, symlink, or special file with conflict, leaving it and
-// the temporary file untouched. Rename would unlink a symlink rather than
-// follow it, so rejecting symlinks keeps PUT at upload's regular-file-only
-// replacement rule even though read endpoints follow symlinks.
+// an existing directory, symlink, or special file with conflict, leaving the
+// destination untouched and removing the temporary data. Rename would unlink a
+// symlink rather than follow it, so rejecting symlinks keeps PUT at upload's
+// regular-file-only replacement rule even though read endpoints follow symlinks.
 func (s *Service) WriteFile(path string, src io.Reader) (FileResult, error) {
 	s.mutations.Lock()
 	defer s.mutations.Unlock()
@@ -104,7 +104,8 @@ func (s *Service) Mkdir(directory, name string) (PathResult, error) {
 // Move renames source onto destination after creating destination parents.
 // os.Rename is called directly: compatible targets are replaced atomically,
 // while type conflicts, non-empty directory targets, and cross-device moves
-// fail with conflict and leave the destination untouched.
+// fail with conflict. A failed rename can leave newly created destination
+// parents behind.
 func (s *Service) Move(source, destination string) (PathResult, error) {
 	s.mutations.Lock()
 	defer s.mutations.Unlock()
@@ -126,7 +127,6 @@ func (s *Service) Move(source, destination string) (PathResult, error) {
 	return PathResult{Path: dst}, nil
 }
 
-// validateName rejects names that are not exactly one non-dot path component.
 func validateName(name string) error {
 	if name == "" || name == "." || name == ".." {
 		return invalidError("name must be a single path component")

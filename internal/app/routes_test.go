@@ -56,10 +56,10 @@ func waitForHealthAuth(t *testing.T, url, token string) {
 	t.Fatalf("authenticated health endpoint never served at %s", url)
 }
 
-// TestRunComposesAllPhaseRoutes proves every Phase 02-05 route is reachable
-// through the single httpapi.Server that app.Run composes, that every /v1
-// route shares the one bearer-auth middleware, and that dispatch reaches the
-// intended non-nil dependency rather than the 503 "unavailable" fallback.
+// TestRunComposesAllPhaseRoutes proves every route is reachable through the
+// single httpapi.Server that app.Run composes, that every /v1 route shares the
+// one bearer-auth middleware, and that dispatch reaches the intended non-nil
+// dependency rather than the 503 "unavailable" fallback.
 func TestRunComposesAllPhaseRoutes(t *testing.T) {
 
 	const token = "route-integration-token"
@@ -138,14 +138,11 @@ func TestRunComposesAllPhaseRoutes(t *testing.T) {
 
 	for _, tc := range enum {
 		t.Run(tc.name, func(t *testing.T) {
-			// Unauthenticated: every /v1 route is behind exactly one auth gate.
 			unauth := doRoute(t, client, http.MethodGet, base+tc.path, "", "")
 			if unauth.StatusCode != http.StatusUnauthorized {
 				t.Errorf("unauthenticated status = %d, want 401", unauth.StatusCode)
 			}
 
-			// Wrong method on a registered path: the shared fallback proves the
-			// path is registered (405 with an Allow set) instead of a 404.
 			wrong := doRoute(t, client, tc.wrong, base+tc.path, "", token)
 			if wrong.StatusCode != http.StatusMethodNotAllowed {
 				t.Errorf("wrong-method status = %d, want 405 (path not registered)", wrong.StatusCode)
@@ -154,8 +151,6 @@ func TestRunComposesAllPhaseRoutes(t *testing.T) {
 				t.Error("wrong-method response has no Allow header")
 			}
 
-			// Intended dependency is present: a nil service yields 503, and a
-			// missing route yields 405/404 at the fallback.
 			got := doRoute(t, client, tc.method, base+tc.path, tc.body, token)
 			if got.StatusCode == http.StatusServiceUnavailable {
 				t.Errorf("authenticated status = 503, want the composed dependency to be present")
@@ -166,7 +161,6 @@ func TestRunComposesAllPhaseRoutes(t *testing.T) {
 		})
 	}
 
-	// The root document stays public while every /v1 route is guarded.
 	root := doRoute(t, client, http.MethodGet, base+"/", "", "")
 	if root.StatusCode != http.StatusOK {
 		t.Errorf("root status = %d, want 200 public", root.StatusCode)
@@ -193,7 +187,6 @@ func TestRunComposesAllPhaseRoutes(t *testing.T) {
 	}
 }
 
-// doRoute issues one request and returns the response with its body drained.
 func doRoute(t *testing.T, client *http.Client, method, url, body, token string) *http.Response {
 	t.Helper()
 	var reader io.Reader

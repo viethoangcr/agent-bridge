@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-// --- Task 4.6: one-shot run with independent output caps ---
-
 func ptrI64(v int64) *int64 { return &v }
 
 func newRunManager(t *testing.T, peakBudget, maxConcurrent int) *Manager {

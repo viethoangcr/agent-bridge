@@ -127,8 +127,8 @@ func TestDockerGracefulShutdown(t *testing.T) {
 		if elapsed > 10*time.Second {
 			t.Fatalf("clean shutdown took %s, want within one 10s budget", elapsed)
 		}
-		// PID removal is last: the file must be gone and the DB must reopen
-		// with committed events after the store was checkpointed and closed.
+		// After exit the PID file must be absent and the checkpointed database
+		// must reopen with its committed events.
 		dir := copyWorkspace(t, c)
 		if _, statErr := os.Stat(filepath.Join(dir, "bridge.pid")); !errors.Is(statErr, os.ErrNotExist) {
 			t.Fatalf("PID file survived shutdown: %v", statErr)
@@ -147,8 +147,6 @@ func TestDockerGracefulShutdown(t *testing.T) {
 			t.Fatalf("committed events after shutdown = %d, want at least %d", len(persisted), len(before))
 		}
 
-		// Restart on the same volume: durable events survive and the stale live
-		// server is recovered as exited regardless of WAL file presence.
 		second := restartContainer(t, image, token, volume, env, nil)
 		second.mustHealthy()
 		recovered, _ := assertServerStatus(t, second, serverID, "exited", false)

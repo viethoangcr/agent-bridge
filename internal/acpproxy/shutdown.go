@@ -13,10 +13,10 @@ type shutdownTarget struct {
 	rt   runtime
 }
 
-// Shutdown idempotently blocks new work, stops the reaper, closes
-// subscriptions, signal-and-waits every current runtime, drains activity
-// leases, and confirms completion while preserving durable rows. It never
-// signals a PID read only from durable state.
+// Shutdown terminates every current runtime and closes all subscriptions while
+// preserving durable rows. It blocks new work and stops the reaper. Concurrent
+// or repeated calls block on the first call and share its result; ctx bounds
+// the process waits. It never signals a PID read only from durable state.
 func (p *Proxy) Shutdown(ctx context.Context) error {
 	p.shutdownMu.Lock()
 	if p.shutdownStarted {
@@ -38,10 +38,6 @@ func (p *Proxy) Shutdown(ctx context.Context) error {
 	return err
 }
 
-// shutdown performs the one-time staged termination: gate every live instance,
-// stop the reaper, close subscriptions, signal-and-wait each runtime outside
-// locks, drain leases, and record the runtimes for Confirm. A creation gated
-// mid-I/O is awaited until its fresh runtime is torn down.
 func (p *Proxy) shutdown(ctx context.Context) error {
 	p.mu.Lock()
 	p.closed.Store(true)
@@ -200,8 +196,6 @@ func (p *Proxy) Confirm(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// closeAllServerSubscriptions hard-closes every registered subscription,
-// including those whose runtimes exited before shutdown.
 func (p *Proxy) closeAllServerSubscriptions() {
 	p.mu.Lock()
 	p.subRegShutdown = true
@@ -215,8 +209,6 @@ func (p *Proxy) closeAllServerSubscriptions() {
 	}
 }
 
-// recordRetired remembers a runtime detached by Shutdown so Confirm can re-wait
-// on it.
 func (p *Proxy) recordRetired(rt runtime) {
 	p.mu.Lock()
 	p.retired = append(p.retired, rt)

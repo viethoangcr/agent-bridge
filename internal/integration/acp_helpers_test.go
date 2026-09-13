@@ -1,9 +1,3 @@
-// Package integration exercises the full Phase 03 composition against the real
-// Phase 02 store, runtime, resolver, and private mock agent over real HTTP.
-//
-// TestMain is the only place this package re-execs itself as the private mock
-// agent: the bridge resolves ?agent=mock to os.Executable(), so the mock
-// subprocess is this test binary with AGENT_BRIDGE_INTERNAL_MOCK_AGENT=1.
 package integration
 
 import (
@@ -26,6 +20,9 @@ import (
 	"github.com/viethoangcr/agent-bridge/internal/mockagent"
 )
 
+// TestMain is the only place this package re-execs itself as the private mock
+// agent: the bridge resolves ?agent=mock to os.Executable(), so the mock
+// subprocess is this test binary with AGENT_BRIDGE_INTERNAL_MOCK_AGENT=1.
 func TestMain(m *testing.M) {
 	if os.Getenv("AGENT_BRIDGE_INTERNAL_MOCK_AGENT") == "1" {
 		if err := mockagent.Run(context.Background(), os.Stdin, os.Stdout, os.Stderr); err != nil {

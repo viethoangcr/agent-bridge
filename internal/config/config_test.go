@@ -14,6 +14,7 @@ func getenv(values map[string]string) func(string) string {
 	return func(key string) string { return values[key] }
 }
 
+// TestLoadDefaults proves an empty environment yields every documented default and the three default agents.
 func TestLoadDefaults(t *testing.T) {
 	cfg, err := config.Load(getenv(nil))
 	if err != nil {
@@ -58,6 +59,7 @@ func TestLoadDefaults(t *testing.T) {
 	}
 }
 
+// TestLoadOverrides proves each documented AGENT_BRIDGE_* override reaches its Config field.
 func TestLoadOverrides(t *testing.T) {
 	cfg, err := config.Load(getenv(map[string]string{
 		"AGENT_BRIDGE_HOST":                   "127.0.0.1",
@@ -104,6 +106,7 @@ func TestLoadOverrides(t *testing.T) {
 	}
 }
 
+// TestLoadLogLevels proves every supported log level parses case-insensitively.
 func TestLoadLogLevels(t *testing.T) {
 	tests := []struct {
 		in   string
@@ -131,6 +134,7 @@ func TestLoadLogLevels(t *testing.T) {
 	}
 }
 
+// TestLoadAgentArgs proves JSON agent argument overrides preserve order and empty slices.
 func TestLoadAgentArgs(t *testing.T) {
 	cfg, err := config.Load(getenv(map[string]string{
 		"AGENT_BRIDGE_OPENCODE_BIN":  "/usr/bin/oc",
@@ -153,6 +157,7 @@ func TestLoadAgentArgs(t *testing.T) {
 	}
 }
 
+// TestLoadAgentArgsOwnership proves mutating one Load result never aliases another.
 func TestLoadAgentArgsOwnership(t *testing.T) {
 	first, err := config.Load(getenv(nil))
 	if err != nil {
@@ -176,6 +181,7 @@ func TestLoadAgentArgsOwnership(t *testing.T) {
 	}
 }
 
+// TestLoadRejections proves malformed or out-of-range variables fail with an error naming the variable.
 func TestLoadRejections(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -215,6 +221,7 @@ func TestLoadRejections(t *testing.T) {
 	}
 }
 
+// TestLoadRemoteAuth proves a non-loopback bind needs a token or the explicit insecure override.
 func TestLoadRemoteAuth(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -257,6 +264,7 @@ func TestLoadRemoteAuth(t *testing.T) {
 	}
 }
 
+// TestLoadErrorOmitsToken proves a validation error never includes the token value.
 func TestLoadErrorOmitsToken(t *testing.T) {
 	const secret = "sup3r-s3cr3t-token"
 	_, err := config.Load(getenv(map[string]string{
@@ -271,6 +279,7 @@ func TestLoadErrorOmitsToken(t *testing.T) {
 	}
 }
 
+// TestLoadAddress proves Address joins IPv4 and IPv6 hosts with the configured port.
 func TestLoadAddress(t *testing.T) {
 	tests := []struct {
 		name string

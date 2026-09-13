@@ -13,7 +13,6 @@ const serverColumns = `server_id, agent, status, created_at_ms, updated_at_ms,
 
 const sessionColumns = `server_id, session_id, cwd, created_at_ms, updated_at_ms`
 
-// nowMs returns the current time in Unix milliseconds from the store clock.
 func (s *Store) nowMs() int64 {
 	if s.clock == nil {
 		return time.Now().UnixMilli()
@@ -23,6 +22,7 @@ func (s *Store) nowMs() int64 {
 
 // CreateServer inserts a new server in the creating state with zeroed
 // counters and null live metadata, using the store clock for both timestamps.
+// An existing server ID is ErrConflict; storage failures are returned wrapped.
 func (s *Store) CreateServer(ctx context.Context, serverID, agent string) (Server, error) {
 	now := s.nowMs()
 	res, err := s.db.ExecContext(ctx,
@@ -49,7 +49,8 @@ func (s *Store) CreateServer(ctx context.Context, serverID, agent string) (Serve
 	}, nil
 }
 
-// Server returns one server by ID, or ErrNotFound.
+// Server returns one server by ID, or ErrNotFound. Storage failures are
+// returned wrapped.
 func (s *Store) Server(ctx context.Context, serverID string) (Server, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT `+serverColumns+` FROM servers WHERE server_id = ?`, serverID)
@@ -63,7 +64,8 @@ func (s *Store) Server(ctx context.Context, serverID string) (Server, error) {
 	return server, nil
 }
 
-// Servers returns every server ordered by server ID.
+// Servers returns every server ordered by server ID. Storage failures are
+// returned wrapped.
 func (s *Store) Servers(ctx context.Context) ([]Server, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT `+serverColumns+` FROM servers ORDER BY server_id`)
@@ -87,7 +89,8 @@ func (s *Store) Servers(ctx context.Context) ([]Server, error) {
 	return servers, nil
 }
 
-// SetLive transitions a server from creating to idle and records its PID.
+// SetLive transitions a server from creating to idle and records its PID. An
+// unknown server is ErrNotFound; storage failures are returned wrapped.
 func (s *Store) SetLive(ctx context.Context, serverID string, pid int) error {
 	now := s.nowMs()
 	res, err := s.db.ExecContext(ctx,
@@ -105,7 +108,9 @@ func (s *Store) SetLive(ctx context.Context, serverID string, pid int) error {
 }
 
 // SetStatus transitions a server between idle and busy, setting idle_since_ms
-// when it enters idle and clearing it when it leaves.
+// when it enters idle and clearing it when it leaves. The caller must pass only
+// StatusIdle or StatusBusy. An unknown server is ErrNotFound; storage failures
+// are returned wrapped.
 func (s *Store) SetStatus(ctx context.Context, serverID string, status Status) error {
 	now := s.nowMs()
 	var idleSince sql.NullInt64
@@ -126,8 +131,9 @@ func (s *Store) SetStatus(ctx context.Context, serverID string, status Status) e
 	return nil
 }
 
-// MarkExited marks a server exited, clearing live metadata. The exit
-// timestamp is set once; repeated calls keep the original value.
+// MarkExited marks a server exited, clearing live metadata. The exit timestamp
+// is set once; repeated calls keep the original value. An unknown server is
+// ErrNotFound; storage failures are returned wrapped.
 func (s *Store) MarkExited(ctx context.Context, serverID string) error {
 	now := s.nowMs()
 	res, err := s.db.ExecContext(ctx,
@@ -145,7 +151,8 @@ func (s *Store) MarkExited(ctx context.Context, serverID string) error {
 	return nil
 }
 
-// DeleteServer removes a server, cascading its sessions and events.
+// DeleteServer removes a server, cascading its sessions and events. An unknown
+// server is ErrNotFound; storage failures are returned wrapped.
 func (s *Store) DeleteServer(ctx context.Context, serverID string) error {
 	res, err := s.db.ExecContext(ctx, `DELETE FROM servers WHERE server_id = ?`, serverID)
 	if err != nil {
@@ -158,6 +165,7 @@ func (s *Store) DeleteServer(ctx context.Context, serverID string) error {
 }
 
 // Session returns one session by server and session ID, or ErrNotFound.
+// Storage failures are returned wrapped.
 func (s *Store) Session(ctx context.Context, serverID, sessionID string) (Session, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT `+sessionColumns+` FROM server_sessions WHERE server_id = ? AND session_id = ?`,
@@ -173,7 +181,7 @@ func (s *Store) Session(ctx context.Context, serverID, sessionID string) (Sessio
 }
 
 // Sessions returns every session of a server ordered by session ID. An unknown
-// server is ErrNotFound.
+// server is ErrNotFound; storage failures are returned wrapped.
 func (s *Store) Sessions(ctx context.Context, serverID string) ([]Session, error) {
 	if _, err := s.Server(ctx, serverID); err != nil {
 		return nil, err
@@ -224,7 +232,6 @@ func scanServer(row rowScanner) (Server, error) {
 	return server, nil
 }
 
-// scanSession reads one session row.
 func scanSession(row rowScanner) (Session, error) {
 	var session Session
 	if err := row.Scan(&session.ServerID, &session.SessionID, &session.CWD,

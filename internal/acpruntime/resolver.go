@@ -23,22 +23,29 @@ const mockEnvVar = "AGENT_BRIDGE_INTERNAL_MOCK_AGENT"
 // LaunchSpec is the fully resolved program, argument vector, and environment
 // for one agent subprocess.
 type LaunchSpec struct {
+	// Program is the executable path or bare name to launch.
 	Program string
-	Args    []string
-	Env     []string
+	// Args is the argument vector after the program; Start passes it to the
+	// child unchanged.
+	Args []string
+	// Env is the fully sanitized child environment.
+	Env []string
 }
 
-// Resolver turns a configured agent identifier into a LaunchSpec. Commands
-// holds the resolved agent commands from config, Environ is the bridge
-// environment captured at startup, and LookPath is an injected binary resolver
-// that defaults to exec.LookPath. Every child receives childenv.Sanitized;
-// only the private mock agent additionally receives the controlled
-// AGENT_BRIDGE_INTERNAL_MOCK_AGENT=1 entry.
+// Resolver turns a configured agent identifier into a LaunchSpec.
 type Resolver struct {
+	// Executable is the running bridge binary's path, used to re-exec the
+	// private mock agent.
 	Executable string
-	Commands   map[string]config.AgentCommand
-	Environ    []string
-	LookPath   func(string) (string, error)
+	// Commands maps configured agent names to their command definitions.
+	Commands map[string]config.AgentCommand
+	// Environ is the bridge environment captured at startup. Resolve sanitizes
+	// it through childenv.Sanitized for every child; only the private mock
+	// agent additionally receives the controlled
+	// AGENT_BRIDGE_INTERNAL_MOCK_AGENT=1 entry.
+	Environ []string
+	// LookPath resolves a bare binary name; a nil value defaults to exec.LookPath.
+	LookPath func(string) (string, error)
 }
 
 // Resolve returns the launch specification for agent. Known agents use their

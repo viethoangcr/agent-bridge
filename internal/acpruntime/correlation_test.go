@@ -12,7 +12,7 @@ import (
 	"github.com/viethoangcr/agent-bridge/internal/acpstore"
 )
 
-// --- Task 2.9c correlation harness -----------------------------------------
+// --- correlation harness ----------------------------------------------------
 
 // fakeTimerSource records every runtimeTimer it creates so tests can fire a
 // specific deadline or grace deterministically.

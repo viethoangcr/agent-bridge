@@ -35,17 +35,14 @@ type runtimeTimer struct {
 	stop func()
 }
 
-// C returns the timer's expiry channel.
 func (t *runtimeTimer) C() <-chan time.Time { return t.ch }
 
-// Stop cancels the timer.
 func (t *runtimeTimer) Stop() {
 	if t.stop != nil {
 		t.stop()
 	}
 }
 
-// realRuntimeTimer is the production timer factory.
 func realRuntimeTimer(d time.Duration) *runtimeTimer {
 	t := time.NewTimer(d)
 	return &runtimeTimer{ch: t.C, stop: func() { t.Stop() }}
@@ -105,7 +102,6 @@ func (e *pendingRequest) deliver(o responseOutcome) {
 	})
 }
 
-// closeDone signals the manager goroutine that the entry is no longer live.
 func (e *pendingRequest) closeDone() {
 	e.doneOnce.Do(func() { close(e.done) })
 }
@@ -116,7 +112,6 @@ func (e *pendingRequest) broadcastExpired() {
 	e.expireOnce.Do(func() { close(e.expired) })
 }
 
-// stopTimers cancels the request deadline and any lifecycle grace timer.
 func (e *pendingRequest) stopTimers() {
 	if e.timeout != nil {
 		e.timeout.Stop()
@@ -202,8 +197,6 @@ func (r *Runtime) markWritten(entry *pendingRequest) {
 	r.corrMu.Unlock()
 }
 
-// manageRequest owns one request's deadline. It exits when the entry's done
-// channel closes (committed, released, or failed) or the deadline expires.
 func (r *Runtime) manageRequest(entry *pendingRequest) {
 	select {
 	case <-entry.timeout.C():
@@ -246,8 +239,6 @@ func (r *Runtime) onRequestTimeout(entry *pendingRequest) {
 	}
 }
 
-// manageGrace waits for the lifecycle grace to expire or the entry to commit.
-// It exits on either signal.
 func (r *Runtime) manageGrace(entry *pendingRequest, grace *runtimeTimer) {
 	select {
 	case <-grace.C():
@@ -319,8 +310,6 @@ func (r *Runtime) completeResponse(entry *pendingRequest, response json.RawMessa
 	r.signalCommitted()
 }
 
-// failPending clears every correlation, stops its timers, closes its manager,
-// and delivers err to any attached waiter.
 func (r *Runtime) failPending(err error) {
 	r.corrMu.Lock()
 	entries := make([]*pendingRequest, 0, len(r.corr))
@@ -337,8 +326,6 @@ func (r *Runtime) failPending(err error) {
 	}
 }
 
-// deadlineTimer returns the entry deadline timer from the injected seam or the
-// production real-time timer.
 func (r *Runtime) deadlineTimer() *runtimeTimer {
 	if r.newDeadlineTimer != nil {
 		return r.newDeadlineTimer(r.requestTimeout)
@@ -346,8 +333,6 @@ func (r *Runtime) deadlineTimer() *runtimeTimer {
 	return realRuntimeTimer(r.requestTimeout)
 }
 
-// graceTimer returns the lifecycle grace timer from the injected seam or the
-// production real-time timer.
 func (r *Runtime) graceTimer() *runtimeTimer {
 	if r.newGraceTimer != nil {
 		return r.newGraceTimer(r.graceDuration)

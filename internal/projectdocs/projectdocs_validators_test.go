@@ -1,5 +1,5 @@
 // Package projectdocs verifies that repository documentation and developer
-// commands stay in sync with the Phase 01 contract. It contains tests only.
+// commands stay in sync with the final public contract. It contains tests only.
 package projectdocs
 
 import (
@@ -213,7 +213,7 @@ func runtimeDockerfileProblems(dockerfile []byte) []string {
 	return problems
 }
 
-// ciTrunkGate and ciReleaseGate are the exact job conditions Phase 06 Task 6.11
+// ciTrunkGate and ciReleaseGate are the exact job conditions the CI contract
 // requires. The trunk gate runs checks and host-architecture Docker E2E only on
 // pull requests and pushes to main; the release gate runs the non-publishing
 // multiarch build on pushes to main, the weekly schedule, and manual dispatch,

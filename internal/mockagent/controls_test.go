@@ -7,8 +7,6 @@ import (
 	"time"
 )
 
-// TestControlHookDelay checks the delay hook waits for the requested duration
-// through the injected sleep seam, then replies.
 func TestControlHookDelay(t *testing.T) {
 	old := sleepFn
 	defer func() { sleepFn = old }()
@@ -28,8 +26,6 @@ func TestControlHookDelay(t *testing.T) {
 	}
 }
 
-// TestControlHookInvalidStdout checks the invalid-stdout hook writes a
-// malformed line before its own response.
 func TestControlHookInvalidStdout(t *testing.T) {
 	line := requestLine(t, "1", methodInvalidStdout, map[string]any{"line": "this is not json"}) + "\n"
 	out, _, err := run(t, line)
@@ -52,7 +48,6 @@ func TestControlHookInvalidStdout(t *testing.T) {
 	}
 }
 
-// TestControlHookStderr checks the stderr hook writes only to stderr.
 func TestControlHookStderr(t *testing.T) {
 	input := requestLine(t, "1", methodStderr, map[string]any{"line": "secret=abc"}) + "\n"
 	out, errOut, err := run(t, input)
@@ -67,8 +62,6 @@ func TestControlHookStderr(t *testing.T) {
 	}
 }
 
-// TestControlHookExit checks the exit hook replies once and then stops the loop
-// without processing later lines.
 func TestControlHookExit(t *testing.T) {
 	input := strings.Join([]string{
 		requestLine(t, "1", methodExit, map[string]any{}),

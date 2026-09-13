@@ -25,13 +25,10 @@ const waitDelay = 2 * time.Second
 var errNotRunning = errors.New("acpruntime: process is not running")
 
 // Runtime owns one ACP agent subprocess and its independent process group.
-//
-// Start captures the child's pipes before spawn, records the row live only
-// after a successful spawn, and starts a minimal stdout/stderr drain so the
-// child cannot wedge. A single wait owner reaps the direct child; whenever the
-// direct child exits, that owner immediately SIGKILLs the captured negative
-// PGID before joining the pumps and publishing exit. Wait and repeated Kill are
-// idempotent confirmations over the same completion.
+// Every exported method is safe for concurrent use. Wait and Kill are
+// idempotent. The sole wait owner signals the group only while the child is
+// unreaped; platforms without unreaped observation perform best-effort
+// descendant cleanup, so a recycled PID or PGID is never signaled.
 type Runtime struct {
 	store    *acpstore.Store
 	serverID string
@@ -50,8 +47,8 @@ type Runtime struct {
 	stdin   io.WriteCloser
 
 	// requestTimeout is the configured deadline shared by writer admission and
-	// the complete write for every envelope kind. Task 2.9b owns it; Task 2.9c
-	// layers correlation/grace timers on top.
+	// the complete write for every envelope kind; correlation and grace timers
+	// build on it.
 	requestTimeout time.Duration
 
 	// The writer fields implement the single bounded JSONL serialization path.
@@ -143,11 +140,15 @@ type Runtime struct {
 	waitErr error
 }
 
-// Start launches the agent described by spec under a runtime-owned cancellable
-// context and its own process group. A non-positive requestTimeout is rejected
-// before any process is spawned. The row is marked live/idle with the PID only
-// after a successful spawn; any post-spawn failure kills the group and marks
-// the row exited.
+// Start launches the agent described by spec and returns a Runtime that owns the
+// direct child and its process group. The caller retains ownership of store; a
+// nil log discards log records. ctx governs the runtime's lifetime: Start
+// derives its cancellable context from ctx, so canceling ctx kills the child and
+// callers must detach ctx if the runtime should outlive it. A non-positive
+// requestTimeout is rejected before any process is spawned. On failure after
+// spawn, Start kills the direct child, attempts safe group cleanup, records the
+// server exited, and returns a wrapped error; on success the durable row is
+// marked live before Start returns.
 func Start(ctx context.Context, store *acpstore.Store, serverID string, spec LaunchSpec, requestTimeout time.Duration, log *slog.Logger) (*Runtime, error) {
 	return start(ctx, store, serverID, spec, requestTimeout, log, nil, nil)
 }
@@ -248,20 +249,17 @@ func (r *Runtime) Events() <-chan struct{} {
 	return r.wake
 }
 
-// Wait blocks until the direct child has exited and the runtime has killed the
-// group, joined its pumps, and marked the server exited. Repeated calls return
-// the same process error.
+// Wait blocks until the direct child has exited, safe group cleanup has been
+// attempted, the pumps have joined, and server exit is published. Repeated
+// calls return the same process error.
 func (r *Runtime) Wait() error {
 	<-r.done
 	return r.waitErr
 }
 
-// Kill terminates the direct child through the stdlib-safe os.Process handle,
-// then waits for the runtime to finish. It never signals a process group:
-// os.Process.Kill is race-safe with Wait and returns os.ErrProcessDone once the
-// child has been reaped, so a recycled PGID cannot be targeted by construction.
-// The sole waiter owns the group kill and runs it only while the child is still
-// unreaped. Kill is idempotent and safe to call concurrently or repeatedly.
+// Kill terminates the direct child and waits for runtime teardown. It is
+// idempotent and safe for concurrent use. ctx bounds that wait. Kill signals
+// only the os.Process handle; the sole wait owner performs safe group cleanup.
 func (r *Runtime) Kill(ctx context.Context) error {
 	select {
 	case <-r.done:
