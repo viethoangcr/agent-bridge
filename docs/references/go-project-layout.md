@@ -38,6 +38,7 @@ agent-bridge/
 │   ├── mockagent/               # private test agent (env-gated)
 │   ├── acpproxy/                # live instance lifecycle and subscriptions
 │   ├── process/                 # managed process groups and one-shot runs
+│   ├── procgroup/               # shared Linux process-group observation (waitid WNOWAIT)
 │   ├── filesystem/              # filesystem service and uploads
 │   ├── projectconfig/           # mcp/skills config files
 │   ├── integration/             # in-repo cross-package tests
@@ -71,6 +72,7 @@ Directory rules:
 | `internal/mockagent` | 02 | private deterministic JSONL mock | persist state, expose CLI/HTTP |
 | `internal/acpproxy` | 03 | live instance map, per-server runtime creation via injected factory, recreation, reaper, subscriptions, delete/shutdown | parse output, match IDs, persist, own request deadlines, lifecycle-grace, or correlation timers |
 | `internal/process` | 04 | process groups, log rings, one-shot runs, process config | PTY/WebSocket/follow/restart/owner features |
+| `internal/procgroup` | 02, 04 | shared Linux `waitid(WNOWAIT)` process-group observation used by the process and runtime waiters | own lifecycle, signaling, or reaping |
 | `internal/filesystem` | 05 | path resolution, mutations, staged uploads | project-config semantics |
 | `internal/projectconfig` | 05 | mcp/skills files with atomic writes | duplicate path resolution (reuse `filesystem`) |
 | `internal/integration` | 03-04 | cross-package behavior tests | production exports |
@@ -100,7 +102,9 @@ flowchart LR
   acpproxy --> acpstore
   acpruntime --> acpstore
   acpruntime --> childenv
+  acpruntime --> procgroup
   process --> childenv
+  process --> procgroup
   projectconfig --> filesystem
 ```
 

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/viethoangcr/agent-bridge/internal/acpstore"
+	"github.com/viethoangcr/agent-bridge/internal/procgroup"
 )
 
 // waitDelay bounds how long Cmd.Wait may wait for wedged pipes before it
@@ -280,7 +281,7 @@ func (r *Runtime) waitProcess() {
 		pid = r.cmd.Process.Pid
 	}
 	var err error
-	if observeExit(pid) {
+	if procgroup.ObserveExit(pid) {
 		r.closeTerminal()
 		_ = r.killProcessGroup()
 		err = r.cmd.Wait()

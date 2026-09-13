@@ -12,6 +12,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/viethoangcr/agent-bridge/internal/procgroup"
 )
 
 // Validate reports static RunRequest errors that do not depend on the active
@@ -244,7 +246,7 @@ func (m *Manager) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		// then reap with cmd.Wait so the real exit status is published.
 		// Platforms without an unreaped observation use the fallback order.
 		var waitErr error
-		if observeExit(pid) {
+		if procgroup.ObserveExit(pid) {
 			gate.exit()
 			waitErr = cmd.Wait()
 		} else {

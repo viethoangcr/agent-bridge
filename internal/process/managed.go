@@ -9,6 +9,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/viethoangcr/agent-bridge/internal/procgroup"
 )
 
 // pumpBufferSize is the bridge-observed chunk size for managed output. Task 4.4
@@ -46,7 +48,7 @@ func (g *signalGate) signal(sig syscall.Signal) error {
 // exit is the waiter's transition. Under the gate it SIGKILLs the captured
 // negative PGID (the waiter is the group's sole owner) and then marks the group
 // exited, so no later external signal path can ever target that PID. On Linux
-// the waiter calls it after observeExit peeked the direct child's exit without
+// the waiter calls it after procgroup.ObserveExit peeked the direct child's exit without
 // reaping it, while the zombie still owns the PID; the fallback calls it
 // immediately after cmd.Wait reaps.
 func (g *signalGate) exit() {
@@ -149,7 +151,7 @@ func (p *managedProcess) pump(stream string, r io.Reader) {
 // pumps; the caller publishes exit state and releases capacity only after wait
 // returns.
 func (p *managedProcess) wait() {
-	if observeExit(p.pid) {
+	if procgroup.ObserveExit(p.pid) {
 		p.signals.exit()
 		_ = p.cmd.Wait()
 	} else {

@@ -1,20 +1,23 @@
-package process
+package procgroup
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"syscall"
 	"testing"
 )
 
 // TestObserveExit_LeavesZombieBeforeGroupKill proves the no-reap contract both
-// waiters depend on: observeExit reports a terminated direct child while it is
+// waiters depend on: ObserveExit reports a terminated direct child while it is
 // still waitable, so its PID is still owned by its zombie and cannot be reused
 // before the signal gate kills the captured group. cmd.Wait afterwards reaps
 // the child and returns its real exit status.
 func TestObserveExit_LeavesZombieBeforeGroupKill(t *testing.T) {
-	requireLinuxProcess(t)
+	requireLinux(t)
 
 	cmd := exec.Command("/bin/sleep", "30")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -36,25 +39,25 @@ func TestObserveExit_LeavesZombieBeforeGroupKill(t *testing.T) {
 	if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil {
 		t.Fatalf("kill child group: %v", err)
 	}
-	if !observeExit(pid) {
-		t.Fatal("observeExit = false, want the terminated child observed")
+	if !ObserveExit(pid) {
+		t.Fatal("ObserveExit = false, want the terminated child observed")
 	}
 
 	state, ok := processState(pid)
 	if !ok || state != 'Z' {
-		t.Fatalf("child state after observeExit = %q (present %v), want zombie 'Z'", state, ok)
+		t.Fatalf("child state after ObserveExit = %q (present %v), want zombie 'Z'", state, ok)
 	}
 	// The zombie still owns its PGID, so the group kill cannot hit an
 	// unrelated recycled group, and cmd.Wait can still reap.
 	if err := syscall.Kill(-pid, 0); err != nil {
-		t.Fatalf("group check after observeExit: %v", err)
+		t.Fatalf("group check after ObserveExit: %v", err)
 	}
 
 	waitErr := cmd.Wait()
 	reaped = true
 	var exitErr *exec.ExitError
 	if !errors.As(waitErr, &exitErr) {
-		t.Fatalf("cmd.Wait after observeExit = %v, want the real SIGKILL exit status", waitErr)
+		t.Fatalf("cmd.Wait after ObserveExit = %v, want the real SIGKILL exit status", waitErr)
 	}
 	status, ok := exitErr.Sys().(syscall.WaitStatus)
 	if !ok || !status.Signaled() || status.Signal() != syscall.SIGKILL {
@@ -69,12 +72,35 @@ func TestObserveExit_LeavesZombieBeforeGroupKill(t *testing.T) {
 // is not an unreaped child (ECHILD) cannot be observed, so the waiters must
 // keep the reap-then-kill order.
 func TestObserveExit_NonChildReportsFalse(t *testing.T) {
-	requireLinuxProcess(t)
+	requireLinux(t)
 
-	if observeExit(os.Getpid()) {
-		t.Fatal("observeExit(self) = true, want false")
+	if ObserveExit(os.Getpid()) {
+		t.Fatal("ObserveExit(self) = true, want false")
 	}
-	if observeExit(1) {
-		t.Fatal("observeExit(1) = true, want false")
+	if ObserveExit(1) {
+		t.Fatal("ObserveExit(1) = true, want false")
 	}
+}
+
+func requireLinux(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skip("process-group observation tests require Linux")
+	}
+}
+
+// processState reads the state character from /proc/<pid>/stat after the
+// parenthesized command, reporting false when the process is gone.
+func processState(pid int) (byte, bool) {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return 0, false
+	}
+	// The command may contain spaces and parentheses; the state is the first
+	// field after the final ')' and its trailing space.
+	end := bytes.LastIndexByte(data, ')')
+	if end < 0 || end+2 >= len(data) {
+		return 0, false
+	}
+	return data[end+2], true
 }
