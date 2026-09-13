@@ -20,8 +20,6 @@ import (
 // is entered, then post-drain runs. This is the exact staged contract, observed
 // rather than inferred from completion order.
 func TestDrainChannelDrivenStageOrder(t *testing.T) {
-	restore := setShutdownGrace(t, 3*time.Second)
-	defer restore()
 
 	rec := &eventRecorder{}
 	preEntered := make(chan struct{})
@@ -59,7 +57,7 @@ func TestDrainChannelDrivenStageOrder(t *testing.T) {
 	cancel()
 	drained := make(chan struct{})
 	go func() {
-		drain(ctx, listener, server, pre, post, discardLogger(), "")
+		drain(ctx, listener, server, pre, post, discardLogger(), "", 3*time.Second)
 		close(drained)
 	}()
 
@@ -112,8 +110,6 @@ func TestDrainChannelDrivenStageOrder(t *testing.T) {
 // http.Server.Shutdown is called, so Run returns within the budget and the
 // client stream observes closure rather than hanging.
 func TestRunOpenSSEExitsBeforeHTTPDrain(t *testing.T) {
-	restore := setShutdownGrace(t, 5*time.Second)
-	defer restore()
 
 	const token = "sse-shutdown-token"
 	addr := freeAddress(t)
@@ -133,7 +129,7 @@ func TestRunOpenSSEExitsBeforeHTTPDrain(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	runErr := make(chan error, 1)
-	go func() { runErr <- Run(ctx, getenv, testIO()) }()
+	go func() { runErr <- run(ctx, getenv, testIO(), testOptions(5*time.Second)) }()
 	waitForHealthAuth(t, "http://"+addr+"/v1/health", token)
 
 	// Create a live runtime through the private mock agent so the SSE stream

@@ -31,7 +31,9 @@ const (
 	maxDurationMillis = math.MaxInt64 / int64(time.Millisecond)
 )
 
-// AgentCommand is the resolved binary and argument vector for one agent.
+// AgentCommand is the configured command name or path and argument vector for
+// one agent. A configured path is used as-is; a bare name is resolved through
+// LookPath by the acpruntime resolver.
 type AgentCommand struct {
 	Binary string
 	Args   []string
@@ -124,9 +126,9 @@ func (c Config) Address() string {
 	return net.JoinHostPort(c.Host, strconv.Itoa(c.Port))
 }
 
-// loadAgents resolves the three supported agents, applying binary and JSON
-// argument overrides. Every returned map and argument slice is freshly
-// allocated so callers cannot mutate shared state.
+// loadAgents builds the three supported agents from the configured command name
+// or path and JSON argument overrides. Every returned map and argument slice is
+// freshly allocated so callers cannot mutate shared state.
 func loadAgents(getenv func(string) string) (map[string]AgentCommand, error) {
 	agents := map[string]AgentCommand{
 		"claude":   {Binary: "claude-agent-acp"},

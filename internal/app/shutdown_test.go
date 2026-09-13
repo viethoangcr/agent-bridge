@@ -22,8 +22,6 @@ import (
 // last, and that normal Run shutdown closes a real store end to end.
 func TestRunShutdownOrder(t *testing.T) {
 	t.Run("database-closed-before-pid-removed", func(t *testing.T) {
-		restore := setShutdownGrace(t, 2*time.Second)
-		defer restore()
 
 		dbPath := filepath.Join(t.TempDir(), "bridge.db")
 		store, err := acpstore.Open(context.Background(), dbPath)
@@ -67,7 +65,7 @@ func TestRunShutdownOrder(t *testing.T) {
 
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		drain(ctx, listener, server, pre, post, discardLogger(), pidPath)
+		drain(ctx, listener, server, pre, post, discardLogger(), pidPath, 2*time.Second)
 
 		want := []string{"listener", "pre", "shutdown", "database"}
 		if got := rec.snapshot(); !slices.Equal(got, want) {
@@ -143,8 +141,6 @@ func TestRunShutdownOrder(t *testing.T) {
 // pre-drain, http Shutdown, post-drain, PID-file removal last. It also proves
 // the pre-drain hook closed the streaming handler before Shutdown was entered.
 func TestDrainStageOrdering(t *testing.T) {
-	restore := setShutdownGrace(t, 2*time.Second)
-	defer restore()
 
 	rec := &eventRecorder{}
 	stream := make(chan struct{})
@@ -189,7 +185,7 @@ func TestDrainStageOrdering(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	drain(ctx, listener, server, pre, post, discardLogger(), pidPath)
+	drain(ctx, listener, server, pre, post, discardLogger(), pidPath, 2*time.Second)
 
 	want := []string{"listener", "pre", "shutdown", "post"}
 	if got := rec.snapshot(); !slices.Equal(got, want) {
@@ -213,8 +209,6 @@ func TestDrainStageOrdering(t *testing.T) {
 // A handler is held in Shutdown to prove the post-drain stage cannot run until
 // handler drain completes; the test is channel-driven and never sleeps.
 func TestServeErrorRunsPostCleanupBeforePIDRemoval(t *testing.T) {
-	restore := setShutdownGrace(t, 2*time.Second)
-	defer restore()
 
 	rec := &eventRecorder{}
 	listener := &fakeCloser{rec: rec}
@@ -248,7 +242,7 @@ func TestServeErrorRunsPostCleanupBeforePIDRemoval(t *testing.T) {
 	serveErr := make(chan error, 1)
 	go func() {
 		serveErr <- serve(context.Background(), listener, server,
-			&lifecycle.Registry{}, post, discardLogger(), pidPath)
+			&lifecycle.Registry{}, post, discardLogger(), pidPath, 2*time.Second)
 	}()
 
 	select {
@@ -280,8 +274,6 @@ func TestServeErrorRunsPostCleanupBeforePIDRemoval(t *testing.T) {
 // TestDrainSharesOneAbsoluteDeadline asserts every stage receives the same
 // absolute deadline with a non-increasing remaining budget, never a reset.
 func TestDrainSharesOneAbsoluteDeadline(t *testing.T) {
-	restore := setShutdownGrace(t, 2*time.Second)
-	defer restore()
 
 	var mu sync.Mutex
 	var deadlines []time.Time
@@ -319,7 +311,7 @@ func TestDrainSharesOneAbsoluteDeadline(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	drain(ctx, listener, server, pre, post, discardLogger(), "")
+	drain(ctx, listener, server, pre, post, discardLogger(), "", 2*time.Second)
 
 	if len(deadlines) != 3 {
 		t.Fatalf("recorded %d deadlines, want 3", len(deadlines))
@@ -340,8 +332,6 @@ func TestDrainSharesOneAbsoluteDeadline(t *testing.T) {
 // expires while http Shutdown is still draining, Close force-closes remaining
 // connections and post-drain still runs.
 func TestDrainForceClosesWhenBudgetExpires(t *testing.T) {
-	restore := setShutdownGrace(t, 30*time.Millisecond)
-	defer restore()
 
 	rec := &eventRecorder{}
 	listener := &fakeCloser{rec: rec}
@@ -362,7 +352,7 @@ func TestDrainForceClosesWhenBudgetExpires(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	drain(ctx, listener, server, &lifecycle.Registry{}, post, discardLogger(), pidPath)
+	drain(ctx, listener, server, &lifecycle.Registry{}, post, discardLogger(), pidPath, 30*time.Millisecond)
 
 	if !server.closeCalled.Load() {
 		t.Fatal("http Close was not called after budget expiry")
@@ -385,8 +375,6 @@ func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
 // registration order, so the error hook runs before the healthy hook and the
 // log record follows both.
 func TestDrainLogsHookErrorsAfterStageCompletes(t *testing.T) {
-	restore := setShutdownGrace(t, 2*time.Second)
-	defer restore()
 
 	rec := &eventRecorder{}
 	logWriter := writerFunc(func(p []byte) (int, error) {
@@ -414,7 +402,7 @@ func TestDrainLogsHookErrorsAfterStageCompletes(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	drain(ctx, listener, server, pre, &lifecycle.Registry{}, logger, "")
+	drain(ctx, listener, server, pre, &lifecycle.Registry{}, logger, "", 2*time.Second)
 
 	got := rec.snapshot()
 	idxHealthy := slices.Index(got, "hook-healthy")
