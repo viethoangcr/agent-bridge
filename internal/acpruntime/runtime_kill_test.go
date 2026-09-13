@@ -129,6 +129,44 @@ func TestRuntimeKillInterleavedWithReapDoesNotSignalReusedGroup(t *testing.T) {
 	}
 }
 
+// TestSignalGateExitNoSignalRejectsSignals proves the mark-only waiter
+// transition closes the signal gate without signaling: once marked, an external
+// signal is a no-op and the captured (live) process group is left untouched. It
+// drives the gate in isolation so it does not depend on the Linux unreaped-exit
+// observation or the reap-then-mark fallback ordering.
+func TestSignalGateExitNoSignalRejectsSignals(t *testing.T) {
+	cmd := exec.Command(os.Args[0])
+	cmd.Env = withEnv(os.Environ(), helperEnv, helperGrandchild)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start target process group: %v", err)
+	}
+	done := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		close(done)
+	}()
+	t.Cleanup(func() {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		<-done
+	})
+
+	var g signalGate
+	g.Store(int64(cmd.Process.Pid))
+	g.exitNoSignal()
+	if got := g.Load(); got != 0 {
+		t.Fatalf("pgid after exitNoSignal = %d, want 0 (gate not marked)", got)
+	}
+	if err := g.signal(syscall.SIGKILL); err != nil {
+		t.Fatalf("signal after exitNoSignal = %v, want nil", err)
+	}
+	select {
+	case <-done:
+		t.Fatal("external signal reached the captured group after exitNoSignal")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
 // startUnrelatedProcessGroup starts this test binary in the blocking helper
 // mode under its own process group and returns its PID.
 func startUnrelatedProcessGroup(t *testing.T) int {

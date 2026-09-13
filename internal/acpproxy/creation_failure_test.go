@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/viethoangcr/agent-bridge/internal/acpruntime"
 	"github.com/viethoangcr/agent-bridge/internal/acpstore"
@@ -431,5 +433,89 @@ func TestAbandonCreateKillFailureRetainsRuntime(t *testing.T) {
 	}
 	if got := rt.kills(); got != 2 {
 		t.Fatalf("kills = %d, want 2", got)
+	}
+}
+
+// TestAwaitCreatingInheritsRetainedTeardownError proves a waiter woken by a
+// creation whose teardown kill failed observes the creator's recorded cause
+// (ErrClosed), not the transient gated-state ErrDeleting. The retained
+// placeholder is still the current generation, so the recorded error wins over
+// the gate because the waiter's own generation was not replaced.
+func TestAwaitCreatingInheritsRetainedTeardownError(t *testing.T) {
+	f := newTestFactory(t)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var enteredOnce sync.Once
+	f.setOnCreate(func(_ context.Context, _ *acpstore.Store, _ string, _ acpruntime.LaunchSpec) error {
+		enteredOnce.Do(func() { close(entered) })
+		<-release
+		return nil
+	})
+	p, _ := newProxyForTest(t, f)
+	ctx := t.Context()
+	id := "retained-waiter-error"
+	agent := "alpha"
+
+	// Every kill fails so the shutdown rollback retains the fresh runtime.
+	inner := p.factory
+	p.factory = func(ctx context.Context, store *acpstore.Store, serverID string, spec acpruntime.LaunchSpec, timeout time.Duration, log *slog.Logger) (runtime, error) {
+		rt, err := inner(ctx, store, serverID, spec, timeout, log)
+		if err == nil {
+			rt.(*fakeRuntime).setKillErr(errBoom)
+		}
+		return rt, err
+	}
+
+	creatorErr := make(chan error, 1)
+	go func() {
+		_, err := p.Post(ctx, id, &agent, "initialize", initPayload)
+		creatorErr <- err
+	}()
+	awaitSignal(t, entered, "creation start")
+
+	waiterArrived := make(chan struct{}, 1)
+	p.beforeCreateWait = func() { waiterArrived <- struct{}{} }
+	waiterErr := make(chan error, 1)
+	go func() {
+		_, err := p.Post(ctx, id, nil, "initialize", initPayload)
+		waiterErr <- err
+	}()
+	awaitSignal(t, waiterArrived, "waiter arrival")
+
+	shutdownDone := make(chan error, 1)
+	go func() { shutdownDone <- p.Shutdown(ctx) }()
+	waitFor(t, p.closed.Load)
+	waitFor(t, func() bool {
+		inst := liveInstance(p, id)
+		if inst == nil {
+			return false
+		}
+		inst.lock.mu.Lock()
+		defer inst.lock.mu.Unlock()
+		return inst.terminating
+	})
+	close(release)
+
+	creator := <-creatorErr
+	waiter := <-waiterErr
+	if !errors.Is(creator, ErrClosed) {
+		t.Fatalf("creator error = %v, want ErrClosed", creator)
+	}
+	if !errors.Is(waiter, creator) {
+		t.Fatalf("waiter error = %v, want the creator's %v", waiter, creator)
+	}
+	inst := liveInstance(p, id)
+	if inst == nil {
+		t.Fatal("retained generation was dropped")
+	}
+	inst.lock.mu.Lock()
+	recorded := inst.createErr
+	inst.lock.mu.Unlock()
+	if !errors.Is(recorded, creator) {
+		t.Fatalf("recorded createErr = %v, want the creator's %v", recorded, creator)
+	}
+	// The retained kill fails again, so Shutdown reports it.
+	if err := <-shutdownDone; !errors.Is(err, errBoom) {
+		t.Fatalf("Shutdown = %v, want errBoom from the retained kill", err)
 	}
 }

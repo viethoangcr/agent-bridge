@@ -151,8 +151,12 @@ func (p *Proxy) awaitCreating(ctx context.Context, lk *lifecycleLock, serverID s
 	createErr := placeholder.createErr
 	lk.mu.Unlock()
 	// A recorded abandonment error is the creator's outcome; it wins over the
-	// gate state so every waiter observes the same cause as the creator.
-	if current == nil && createErr != nil {
+	// gate state so every waiter observes the same cause as the creator. It
+	// applies when the waiter's own generation failed and was not replaced:
+	// either it was dropped (current == nil) or its failed teardown retained it
+	// (current == placeholder). A genuinely replaced generation falls through
+	// to the retry/lease path below.
+	if createErr != nil && (current == nil || current == placeholder) {
 		return nil, false, createErr
 	}
 	// A DELETE that gated the placeholder while this waiter slept wins:

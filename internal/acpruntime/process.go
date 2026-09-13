@@ -17,7 +17,9 @@ import (
 // direct child, so once exit state is published no external path can signal a
 // recycled PGID. On Linux the waiter marks the group exited after
 // procgroup.ObserveExit peeked the direct child's exit unreaped, while the
-// zombie still owns the PID.
+// zombie still owns the PID. Without that observation the waiter reaps first
+// and only marks the gate exited (exitNoSignal), leaving no safe window to
+// signal the group.
 type signalGate struct {
 	mu     sync.Mutex
 	pgid   int
@@ -49,6 +51,22 @@ func (g *signalGate) exit() {
 	}
 	if g.pgid > 1 {
 		_ = syscall.Kill(-g.pgid, syscall.SIGKILL)
+	}
+	g.pgid = 0
+	g.exited = true
+}
+
+// exitNoSignal marks the group exited and clears the captured id without
+// signaling it. It is the waiter's transition on platforms where the direct
+// child could not be observed unreaped: once cmd.Wait has returned the PID may
+// already have been recycled, so a negative-PGID SIGKILL could target an
+// unrelated process group. Descendant group cleanup is therefore best-effort on
+// those platforms. It is idempotent.
+func (g *signalGate) exitNoSignal() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.exited {
+		return
 	}
 	g.pgid = 0
 	g.exited = true
@@ -116,9 +134,10 @@ func (r *Runtime) killProcessGroup() error {
 // captured negative PGID) while the zombie still owns the PID so a descendant
 // holding the inherited pipes cannot delay group teardown, and only then reaps
 // with cmd.Wait so the real exit status is available. Platforms without an
-// unreaped observation keep the reap-then-exit order. Either way it closes the
-// terminal gate before killing the group, stops and joins the writer, then
-// joins the pumps and publishes exit.
+// unreaped observation reap first and then mark the gate exited without
+// signaling: after reap the PID may be recycled, so a negative-PGID kill could
+// hit an unrelated group and descendant cleanup is best-effort there. Either
+// way it stops and joins the writer, then joins the pumps and publishes exit.
 func (r *Runtime) waitProcess() {
 	var pid int
 	if r.cmd.Process != nil {
@@ -131,8 +150,8 @@ func (r *Runtime) waitProcess() {
 		err = r.cmd.Wait()
 	} else {
 		err = r.cmd.Wait()
+		r.pgid.exitNoSignal()
 		r.closeTerminal()
-		r.pgid.exit()
 	}
 	if hook := r.afterReap; hook != nil {
 		hook()
@@ -171,6 +190,9 @@ func (r *Runtime) writeLine(line []byte) error {
 // abortAfterSpawn terminates a just-spawned group and records the server
 // exited for any failure between spawn and live publication. It closes the
 // signal gate before reaping on Linux so the group kill cannot race PID reuse.
+// Without an unreaped observation it reaps first and then only marks the gate
+// exited: the PID may be recycled after reap, so descendant cleanup is
+// best-effort and no negative-PGID signal is sent.
 func (r *Runtime) abortAfterSpawn(reason error, pipes ...io.Closer) error {
 	var pid int
 	if r.cmd.Process != nil {
@@ -181,7 +203,7 @@ func (r *Runtime) abortAfterSpawn(reason error, pipes ...io.Closer) error {
 		_ = r.cmd.Wait()
 	} else {
 		_ = r.cmd.Wait()
-		r.pgid.exit()
+		r.pgid.exitNoSignal()
 	}
 	r.cancel()
 	r.closeStdin()
