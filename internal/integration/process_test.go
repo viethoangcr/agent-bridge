@@ -2,78 +2,16 @@ package integration
 
 import (
 	"bytes"
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net"
 	"net/http"
 	"os"
-	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/viethoangcr/agent-bridge/internal/app"
 	"github.com/viethoangcr/agent-bridge/internal/process"
 )
-
-// startBridgeToken starts the full app with a bearer token and waits for health
-// using the required Authorization header.
-func startBridgeToken(t *testing.T, token string) *bridge {
-	t.Helper()
-	addr := freeAddr(t)
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		t.Fatalf("split address: %v", err)
-	}
-	dir := t.TempDir()
-	b := &bridge{
-		t:      t,
-		base:   "http://" + addr,
-		dbPath: filepath.Join(dir, "bridge.db"),
-		dir:    dir,
-		client: &http.Client{},
-	}
-	env := map[string]string{
-		"AGENT_BRIDGE_HOST":        host,
-		"AGENT_BRIDGE_PORT":        port,
-		"AGENT_BRIDGE_TOKEN":       token,
-		"AGENT_BRIDGE_DB":          b.dbPath,
-		"AGENT_BRIDGE_PID_FILE":    filepath.Join(dir, "bridge.pid"),
-		"AGENT_BRIDGE_LOG_LEVEL":   "error",
-		"AGENT_BRIDGE_IDLE_TTL_MS": "0",
-	}
-	getenv := func(key string) string { return env[key] }
-
-	ctx, cancel := context.WithCancel(context.Background())
-	b.cancel = cancel
-	b.done = make(chan error, 1)
-	go func() {
-		b.done <- app.Run(ctx, getenv, app.IO{Stdin: strings.NewReader(""), Stdout: io.Discard, Stderr: io.Discard})
-	}()
-
-	deadline := time.Now().Add(15 * time.Second)
-	for time.Now().Before(deadline) {
-		req, err := http.NewRequest(http.MethodGet, b.base+"/v1/health", nil)
-		if err != nil {
-			t.Fatalf("new health request: %v", err)
-		}
-		req.Header.Set("Authorization", "Bearer "+token)
-		resp, err := b.client.Do(req)
-		if err == nil {
-			_ = resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				return b
-			}
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	b.stop()
-	t.Fatal("token bridge never served health")
-	return nil
-}
 
 // processSnapshotView is the subset of a managed snapshot the integration test
 // asserts on.
@@ -132,7 +70,7 @@ func (b *bridge) waitProcessStdout(id, want string) {
 // pre-drain/shutdown hooks terminate managed groups while the bridge stays up.
 func TestProcessHTTP(t *testing.T) {
 	t.Run("auth-and-problem-middleware", func(t *testing.T) {
-		b := startBridgeToken(t, "secret")
+		b := startBridge(t, bridgeOptions{token: "secret"})
 		defer b.stop()
 
 		resp := b.do(http.MethodGet, "/v1/processes/config", "", nil)
@@ -161,7 +99,7 @@ func TestProcessHTTP(t *testing.T) {
 	})
 
 	t.Run("managed-run-lifecycle", func(t *testing.T) {
-		b := startBridge(t, nil)
+		b := startBridge(t, bridgeOptions{})
 		defer b.stop()
 
 		// Start a managed process with an echoable stdin.
