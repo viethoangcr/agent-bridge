@@ -216,11 +216,12 @@ func runtimeDockerfileProblems(dockerfile []byte) []string {
 // ciTrunkGate and ciReleaseGate are the exact job conditions the CI contract
 // requires. The trunk gate runs checks and host-architecture Docker E2E only on
 // pull requests and pushes to main; the release gate runs the non-publishing
-// multiarch build on pushes to main, the weekly schedule, and manual dispatch,
-// and never on pull requests.
+// multiarch build on the weekly schedule and manual dispatch only, never on
+// pull requests or merges (merge-time multiarch publishing is owned by
+// publish.yml).
 const (
 	ciTrunkGate   = "if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')"
-	ciReleaseGate = "if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'"
+	ciReleaseGate = "if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'"
 )
 
 // ciPinnedAction matches a non-local action reference pinned to a full

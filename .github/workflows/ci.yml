@@ -3,7 +3,8 @@
 # Every action is pinned to a full 40-character commit SHA; tags, branches, and
 # abbreviations are forbidden. The checks and host-architecture Docker E2E jobs
 # run on pull requests and pushes to main. The non-publishing two-architecture
-# build runs only on pushes to main, the weekly schedule, and manual dispatch.
+# build runs only on the weekly schedule and manual dispatch; the merge-time
+# multiarch build and publish is owned by publish.yml.
 
 name: ci
 
@@ -78,7 +79,7 @@ jobs:
         run: go test -tags=e2e ./tests/e2e -count=1 -timeout=20m
 
   multiarch:
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

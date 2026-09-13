@@ -165,6 +165,27 @@ func TestReadmeDocumentsFinalPublicContract(t *testing.T) {
 	contains(t, "internal/httpapi/server.go", server, "https://github.com/viethoangcr/agent-bridge#readme")
 }
 
+// TestREADMEDocumentsPublishedArtifacts locks the published-image and release
+// channels: the GHCR pull path, the edge-versus-stable image tags, verified
+// release checksums, the release contract link, and the license.
+func TestREADMEDocumentsPublishedArtifacts(t *testing.T) {
+	readme := readRepoFile(t, "README.md")
+
+	for _, fragment := range []string{
+		"ghcr.io/viethoangcr/agent-bridge",
+		":main",
+		":sha-",
+		":latest",
+		"SHA256SUMS",
+		"sha256sum -c SHA256SUMS",
+		"docs/references/releasing.md",
+		"MIT",
+		"LICENSE",
+	} {
+		contains(t, "README.md", readme, fragment)
+	}
+}
+
 func TestAgentsDocumentedRules(t *testing.T) {
 	agents := readRepoFile(t, "AGENTS.md")
 
@@ -212,6 +233,49 @@ func TestLayoutDocumentCoversEveryPackage(t *testing.T) {
 	}
 	if dirs == 0 {
 		t.Fatal("internal/ has no package directories")
+	}
+}
+
+// TestReleasingDocumentContract locks the durable release contract: the
+// reference must name the versioning, trigger, image, artifact, and rollback
+// terms operators rely on, and the document hierarchy must point to it.
+func TestReleasingDocumentContract(t *testing.T) {
+	releasing := readRepoFile(t, filepath.Join("docs", "references", "releasing.md"))
+
+	for _, fragment := range []string{
+		"SemVer",
+		"vMAJOR.MINOR.PATCH",
+		"ghcr.io/viethoangcr/agent-bridge",
+		":main",
+		":sha-",
+		":latest",
+		"workflow_run",
+		"SHA256SUMS",
+		"imagetools create",
+		"rollback",
+	} {
+		contains(t, "docs/references/releasing.md", releasing, fragment)
+	}
+
+	for _, path := range []string{
+		"AGENTS.md",
+		filepath.Join("docs", "references", "go-project-layout.md"),
+	} {
+		contains(t, path, readRepoFile(t, path), "docs/references/releasing.md")
+	}
+}
+
+// TestLicenseContract locks the repository license: the root LICENSE carries
+// the standard MIT text and the confirmed copyright holder.
+func TestLicenseContract(t *testing.T) {
+	license := readRepoFile(t, "LICENSE")
+
+	for _, fragment := range []string{
+		"MIT License",
+		"Copyright (c) 2026 Nguyen Quang Viet Hoang",
+		"Permission is hereby granted",
+	} {
+		contains(t, "LICENSE", license, fragment)
 	}
 }
 

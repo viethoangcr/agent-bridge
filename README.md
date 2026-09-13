@@ -45,6 +45,33 @@ subreaper, declares `EXPOSE 2468`, and keeps `/opt/agents` root-owned and
 **immutable**: the bridge never downloads, installs, or updates agents at
 runtime.
 
+### Published Image
+
+Every merge to `main` that passes CI publishes a multi-architecture image to
+the GitHub Container Registry at `ghcr.io/viethoangcr/agent-bridge`:
+
+```sh
+docker pull ghcr.io/viethoangcr/agent-bridge:latest
+```
+
+`:latest` is the stable release channel and moves only on a stable `vX.Y.Z`
+tag. `:main` tracks the latest green merge and `:sha-<commit>` pins one exact
+commit; both are unreleased edge channels for early testing.
+
+### Releases
+
+Tagging `main` with an annotated `vX.Y.Z` (or `-rc.N`) publishes a GitHub
+Release with `agent-bridge_<X.Y.Z>_linux_amd64.tar.gz`,
+`agent-bridge_<X.Y.Z>_linux_arm64.tar.gz`, and `SHA256SUMS`. Verify a download
+before running it:
+
+```sh
+sha256sum -c SHA256SUMS
+```
+
+The tag, trigger, image-tag, and rollback contract is owned by
+[`docs/references/releasing.md`](docs/references/releasing.md).
+
 ## Run
 
 The image sets `AGENT_BRIDGE_HOST=0.0.0.0`, so startup requires
@@ -251,9 +278,15 @@ explicitly **deferred** until isolated CI credentials exist.
   compatibility, Inspector UI, telemetry, daemon mode, or public CLI
   subcommands.
 
+## License
+
+Released under the [MIT License](LICENSE).
+
 ## Contributing
 
 - [`docs/references/go-project-layout.md`](docs/references/go-project-layout.md)
   defines layout, package ownership, and hygiene gates.
 - [`docs/references/go-coding-standards.md`](docs/references/go-coding-standards.md)
   defines behavior-level coding rules.
+- [`docs/references/releasing.md`](docs/references/releasing.md)
+  defines versioning, publishing triggers, image tags, artifacts, and rollback.
