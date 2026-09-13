@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"os/exec"
 	"sync"
 	"sync/atomic"
@@ -39,12 +40,11 @@ type Runtime struct {
 	cmd    *exec.Cmd
 	cancel context.CancelFunc
 
-	// pgid is the synchronized signal gate over the captured process-group ID
-	// of the direct child; it is never derived from persisted state. The sole
-	// waiter closes the gate before reaping so no external signal can target a
-	// recycled PGID. pid is cleared to zero after exit.
-	pgid signalGate
-	pid  atomic.Int64
+	// pid is the live direct-child PID, cleared to zero after exit. External
+	// Kill signals only this child's os.Process handle; the sole waiter owns
+	// the negative-PGID group kill and runs it only while the child is
+	// unreaped, so a recycled PGID is never targeted.
+	pid atomic.Int64
 
 	writeMu sync.Mutex
 	stdin   io.WriteCloser
@@ -117,14 +117,15 @@ type Runtime struct {
 	beforeTerminalClear func()
 
 	// afterReap runs in the sole waiter immediately after cmd.Wait returns,
-	// before the captured group is released. It is nil in production and exists
-	// only so tests can deterministically interleave an external signal with the
-	// reap-to-exit transition.
+	// before exit is published. It is nil in production and exists only so tests
+	// can deterministically interleave an external signal with the reap-to-exit
+	// transition.
 	afterReap func()
 
 	// observeExit reports whether the direct child's exit can be peeked without
 	// reaping. It is nil in production, where procgroup.ObserveExit is used, and
-	// exists only so tests can force the fallback reap-then-mark path.
+	// exists only so tests can force the fallback reap-without-group-kill path
+	// or pause the waiter around its group kill.
 	observeExit func(*Runtime, int) bool
 
 	// wake is the capacity-one coalesced output/termination wakeup channel.
@@ -176,11 +177,10 @@ func start(ctx context.Context, store *acpstore.Store, serverID string, spec Lau
 	r := newRuntime(store, serverID, log, cmd, cancel, stdin, requestTimeout)
 	r.afterReap = afterReap
 	r.observeExit = observeExit
-	// CommandContext's default cancellation kills only the direct child;
-	// replace it with a guarded negative-PGID SIGKILL. The non-blocking variant
-	// keeps cmd.Wait, which synchronously joins the cancellation watcher, from
-	// deadlocking on a gate the fallback waiter holds across its reap.
-	cmd.Cancel = func() error { return r.cancelProcessGroup() }
+	// Keep exec.CommandContext's default direct-child Cancel: a canceled start
+	// kills only the leader, and the sole waiter then cleans up the group before
+	// reaping. A group-killing Cancel would contend with the waiter and could
+	// signal a PGID it no longer owns.
 
 	if err := cmd.Start(); err != nil {
 		cancel()
@@ -191,10 +191,10 @@ func start(ctx context.Context, store *acpstore.Store, serverID string, spec Lau
 		return nil, fmt.Errorf("acpruntime: start %q: %w", spec.Program, err)
 	}
 
-	r.captureProcessGroup()
+	r.pid.Store(int64(cmd.Process.Pid))
 
-	// A cancellation that raced the spawn was not seen by the guard above
-	// (pgid was not yet captured); observe it now before publishing live.
+	// A cancellation that raced the spawn may not have been seen by the default
+	// cancel watcher yet; observe it now before publishing live.
 	if err := runCtx.Err(); err != nil {
 		return nil, r.abortAfterSpawn(fmt.Errorf("acpruntime: spawn %q canceled: %w", spec.Program, err), stdout, stderr)
 	}
@@ -256,17 +256,19 @@ func (r *Runtime) Wait() error {
 	return r.waitErr
 }
 
-// Kill sends SIGKILL to the captured negative PGID, then waits for the direct
-// child and every runtime-owned goroutine. It is idempotent and safe to call
-// concurrently or repeatedly. Once the runtime is terminal no signal is sent:
-// the direct child has been reaped and its PGID may have been recycled.
+// Kill terminates the direct child through the stdlib-safe os.Process handle,
+// then waits for the runtime to finish. It never signals a process group:
+// os.Process.Kill is race-safe with Wait and returns os.ErrProcessDone once the
+// child has been reaped, so a recycled PGID cannot be targeted by construction.
+// The sole waiter owns the group kill and runs it only while the child is still
+// unreaped. Kill is idempotent and safe to call concurrently or repeatedly.
 func (r *Runtime) Kill(ctx context.Context) error {
 	select {
 	case <-r.done:
 		return nil
 	default:
 	}
-	if err := r.killProcessGroup(); err != nil {
+	if err := r.killChild(); err != nil {
 		return err
 	}
 	select {
@@ -275,4 +277,16 @@ func (r *Runtime) Kill(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// killChild SIGKILLs the direct child and treats an already-reaped process as
+// success. It never targets a process group.
+func (r *Runtime) killChild() error {
+	if r.cmd == nil || r.cmd.Process == nil {
+		return nil
+	}
+	if err := r.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		return err
+	}
+	return nil
 }

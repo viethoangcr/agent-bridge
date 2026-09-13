@@ -6,15 +6,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"syscall"
 	"testing"
 	"time"
 )
 
-// TestRuntimeKillAfterNaturalExitClearsPGID proves the captured pgid is cleared
-// once the direct child is reaped and that a post-exit Kill confirms promptly.
-func TestRuntimeKillAfterNaturalExitClearsPGID(t *testing.T) {
+// TestRuntimeKillAfterExitReturnsNil proves a post-exit Kill is an idempotent
+// nil confirmation: the direct child has been reaped, so the stdlib process
+// handle reports os.ErrProcessDone, which Kill treats as success.
+func TestRuntimeKillAfterExitReturnsNil(t *testing.T) {
 	requireLinux(t)
 	r, _, pidPath := startHelperRuntime(t, helperChildExits, time.Minute)
 	pids := readHelperPIDs(t, pidPath)
@@ -22,9 +22,6 @@ func TestRuntimeKillAfterNaturalExitClearsPGID(t *testing.T) {
 
 	if err := r.Wait(); err != nil {
 		t.Fatalf("Wait after natural exit = %v, want nil", err)
-	}
-	if got := r.pgid.Load(); got != 0 {
-		t.Fatalf("captured pgid after Wait = %d, want 0", got)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -60,70 +57,98 @@ func TestRuntimeConcurrentKillBeforeAndAfterExit(t *testing.T) {
 	}
 }
 
-// TestRuntimePostExitKillDoesNotSignalReusedGroup simulates the kernel
-// recycling the captured PGID for a live unrelated process group after the
-// direct child was reaped; a post-exit Kill must not signal it.
-func TestRuntimePostExitKillDoesNotSignalReusedGroup(t *testing.T) {
+// TestRuntimeKillTargetsDirectChildBeforeWaiterKillsGroup proves the ownership
+// split of the redesigned termination path: external Kill SIGKILLs only the
+// direct child through its os.Process handle, never the negative PGID. The
+// waiter, paused here before observing exit, is the sole group owner; the
+// descendant survives Kill itself and dies only once the runtime completes.
+func TestRuntimeKillTargetsDirectChildBeforeWaiterKillsGroup(t *testing.T) {
 	requireLinux(t)
-	r, _, pidPath := startHelperRuntime(t, helperChildExits, time.Minute)
-	pids := readHelperPIDs(t, pidPath)
-	cleanupReportedPIDs(t, pids)
-
-	if err := r.Wait(); err != nil {
-		t.Fatalf("Wait after natural exit = %v, want nil", err)
-	}
-
-	unrelated := startUnrelatedProcessGroup(t)
-	r.pgid.Store(int64(unrelated))
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := r.Kill(ctx); err != nil {
-		t.Fatalf("post-exit Kill = %v, want nil", err)
-	}
-	if state, ok := processState(unrelated); !ok || state == 'Z' {
-		t.Fatalf("unrelated group process %d state = %q (present %v), want alive after post-exit Kill", unrelated, state, ok)
-	}
-}
-
-// TestRuntimeKillInterleavedWithReapDoesNotSignalReusedGroup forces the exact
-// in-wait interleaving window: the waiter is paused after reaping the direct
-// child, the captured PGID is overwritten with a live unrelated group (as the
-// kernel recycling the ID would), and a Kill then runs. The group's signal gate
-// must already be closed, so the recycled group is never signaled.
-func TestRuntimeKillInterleavedWithReapDoesNotSignalReusedGroup(t *testing.T) {
-	requireLinux(t)
-	entered := make(chan struct{})
 	release := make(chan struct{})
-	r, _, pidPath := startHelperRuntimeHooked(t, helperProcessGroup, time.Minute, func() {
-		close(entered)
+	r, _, pidPath := startHelperRuntimeHooked(t, helperProcessGroup, time.Minute, nil, func(*Runtime, int) bool {
 		<-release
-	}, nil)
+		return true
+	})
 	pids := readHelperPIDs(t, pidPath)
 	cleanupReportedPIDs(t, pids)
-
-	// Natural exit of only the direct child; the grandchild holds the inherited
-	// pipes until the waiter's mandatory group kill.
-	if err := syscall.Kill(pids.Direct, syscall.SIGKILL); err != nil {
-		t.Fatalf("kill direct child: %v", err)
-	}
-	awaitSignal(t, entered, "waiter paused after reaping the direct child")
-
-	// Simulate the kernel recycling the reaped child's PGID for a live group
-	// before the waiter releases the captured id.
-	unrelated := startUnrelatedProcessGroup(t)
-	r.pgid.Store(int64(unrelated))
 
 	// An already-cancelled context makes Kill signal (or no-op) and return
 	// without waiting for the still-paused waiter.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if err := r.Kill(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Kill with paused waiter = %v, want context.Canceled", err)
+	}
+	requireAliveFor(t, pids.Grandchild, 200*time.Millisecond)
+
+	// Releasing the waiter lets the sole group owner kill the captured group
+	// while the direct child is still unreaped.
+	close(release)
+	if err := r.Wait(); err != nil {
+		t.Logf("Wait after group teardown = %v", err)
+	}
+	waitReaped(t, pids.Direct)
+	waitGoneOrZombie(t, pids.Grandchild)
+}
+
+// TestRuntimeConcurrentKillAndExitLeavesUnrelatedGroupAlive hammers Kill while
+// the waiter transitions the child to exited. Kill never signals a process
+// group, so a live unrelated group must survive every interleaving under the
+// race detector.
+func TestRuntimeConcurrentKillAndExitLeavesUnrelatedGroupAlive(t *testing.T) {
+	requireLinux(t)
+	unrelated := startUnrelatedProcessGroup(t)
+	release := make(chan struct{})
+	r, _, pidPath := startHelperRuntimeHooked(t, helperChildExits, time.Minute, nil, func(*Runtime, int) bool {
+		<-release
+		return true
+	})
+	pids := readHelperPIDs(t, pidPath)
+	cleanupReportedPIDs(t, pids)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	const killers = 8
+	done := make(chan error, killers)
+	for i := 0; i < killers; i++ {
+		go func() { done <- r.Kill(ctx) }()
+	}
+	close(release)
+	for i := 0; i < killers; i++ {
+		if err := <-done; err != nil {
+			t.Errorf("concurrent Kill[%d] = %v, want nil", i, err)
+		}
+	}
+	if state, ok := processState(unrelated); !ok || state == 'Z' {
+		t.Fatalf("unrelated group process %d state = %q (present %v), want alive after Kill/exit interleaving", unrelated, state, ok)
+	}
+}
+
+// TestRuntimeKillInterleavedWithReapDoesNotSignalLiveGroup pauses the waiter
+// after it reaps the direct child, then runs Kill. The child's PID may be
+// recycled by then; because Kill signals only the stdlib process handle, which
+// Wait has already marked done, no signal reaches a live unrelated group.
+func TestRuntimeKillInterleavedWithReapDoesNotSignalLiveGroup(t *testing.T) {
+	requireLinux(t)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	r, _, pidPath := startHelperRuntimeHooked(t, helperChildExits, time.Minute, func() {
+		close(entered)
+		<-release
+	}, nil)
+	pids := readHelperPIDs(t, pidPath)
+	cleanupReportedPIDs(t, pids)
+
+	awaitSignal(t, entered, "waiter paused after reaping the direct child")
+	unrelated := startUnrelatedProcessGroup(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := r.Kill(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("interleaved Kill = %v, want context.Canceled", err)
 	}
 
-	// Let the waiter finish so a signal sent during the window is delivered
-	// before the recycled group is inspected.
 	close(release)
 	_ = r.Wait()
 	if state, ok := processState(unrelated); !ok || state == 'Z' {
@@ -131,111 +156,73 @@ func TestRuntimeKillInterleavedWithReapDoesNotSignalReusedGroup(t *testing.T) {
 	}
 }
 
-// TestRuntimeFallbackReapSerializesWithKill forces the fallback (no unreaped
-// exit observation) waiter path and proves its reap is serialized with external
-// signaling. The gate's captured PGID is pointed at a live unrelated group, so
-// any signal that sneaks in between reap and the gate mark kills it. While the
-// fallback waiter holds the gate across cmd.Wait, a concurrent Kill cannot
-// signal: it blocks until reap and the mark complete and then observes exited
-// and no-ops, so the unrelated group survives.
-func TestRuntimeFallbackReapSerializesWithKill(t *testing.T) {
+// TestRuntimeStartContextCancelKillsGroup proves a canceled start context tears
+// down the whole group: the default direct-child cancel kills the leader and
+// the sole waiter then kills the descendant before reaping.
+func TestRuntimeStartContextCancelKillsGroup(t *testing.T) {
 	requireLinux(t)
-	unrelated := startUnrelatedProcessGroup(t)
-
 	store := newRuntimeStore(t)
 	pidPath := filepath.Join(t.TempDir(), "helper-pids.json")
 	env := withEnv(os.Environ(), helperEnv, helperProcessGroup)
 	env = withEnv(env, helperPIDFileEnv, pidPath)
 	spec := LaunchSpec{Program: os.Args[0], Env: env}
 
-	r, err := start(t.Context(), store, "srv", spec, time.Minute, testLogger(), nil, func(r *Runtime, _ int) bool {
-		// Simulate the kernel recycling the reaped child's PGID for the live
-		// unrelated group before the fallback wait begins.
-		r.pgid.Store(int64(unrelated))
-		return false
-	})
+	ctx, cancel := context.WithCancel(context.Background())
+	r, err := start(ctx, store, "srv", spec, time.Minute, testLogger(), nil, nil)
 	if err != nil {
+		cancel()
 		t.Fatalf("Start: %v", err)
 	}
 	pids := readHelperPIDs(t, pidPath)
 	cleanupReportedPIDs(t, pids)
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = r.Kill(ctx)
-	})
 
-	// Wait, bounded, until the fallback waiter holds the gate across its reap.
-	// The fixed code acquires the gate before cmd.Wait; the old code never holds
-	// it across the reap, so the deadline simply expires.
-	deadline := time.Now().Add(time.Second)
-	for r.pgid.mu.TryLock() {
-		r.pgid.mu.Unlock()
-		if time.Now().After(deadline) {
-			break
-		}
-		runtime.Gosched()
+	cancel()
+	select {
+	case <-r.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runtime did not terminate after start context cancellation")
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	killDone := make(chan error, 1)
-	go func() { killDone <- r.Kill(ctx) }()
-
-	// Release the direct child so the fallback reap can finish; the fixed
-	// waiter reaps, marks the gate exited, and only then lets Kill observe its
-	// no-op.
-	if err := syscall.Kill(pids.Direct, syscall.SIGKILL); err != nil {
-		t.Fatalf("kill direct child: %v", err)
-	}
-	if err := r.Wait(); err != nil {
-		t.Logf("Wait after fallback reap = %v", err)
-	}
-	if err := <-killDone; err != nil {
-		t.Fatalf("fallback Kill = %v, want nil", err)
-	}
-
-	if state, ok := processState(unrelated); !ok || state == 'Z' {
-		t.Fatalf("unrelated group process %d state = %q (present %v), want alive: fallback reap signaled a recycled PGID", unrelated, state, ok)
-	}
+	waitReaped(t, pids.Direct)
+	waitGoneOrZombie(t, pids.Grandchild)
 }
 
-// TestSignalGateExitNoSignalRejectsSignals proves the mark-only waiter
-// transition closes the signal gate without signaling: once marked, an external
-// signal is a no-op and the captured (live) process group is left untouched. It
-// drives the gate in isolation so it does not depend on the Linux unreaped-exit
-// observation or the reap-then-mark fallback ordering.
-func TestSignalGateExitNoSignalRejectsSignals(t *testing.T) {
-	cmd := exec.Command(os.Args[0])
-	cmd.Env = withEnv(os.Environ(), helperEnv, helperGrandchild)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start target process group: %v", err)
-	}
-	done := make(chan struct{})
-	go func() {
-		_ = cmd.Wait()
-		close(done)
-	}()
-	t.Cleanup(func() {
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		<-done
-	})
+// TestRuntimeAbortAfterSpawnKillsGroupWithoutHanging forces the post-spawn
+// failure path with a live child and asserts abortAfterSpawn kills the direct
+// child before observing exit, then cleans the descendant group. Without the
+// intervening direct-child kill, ObserveExit would block on a live child.
+func TestRuntimeAbortAfterSpawnKillsGroupWithoutHanging(t *testing.T) {
+	requireLinux(t)
+	store := newRuntimeStore(t)
+	pidPath := filepath.Join(t.TempDir(), "helper-pids.json")
+	env := withEnv(os.Environ(), helperEnv, helperProcessGroup)
+	env = withEnv(env, helperPIDFileEnv, pidPath)
 
-	var g signalGate
-	g.Store(int64(cmd.Process.Pid))
-	g.exitNoSignal()
-	if got := g.Load(); got != 0 {
-		t.Fatalf("pgid after exitNoSignal = %d, want 0 (gate not marked)", got)
+	cmd := exec.Command(os.Args[0])
+	cmd.Env = env
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatalf("stdin pipe: %v", err)
 	}
-	if err := g.signal(syscall.SIGKILL); err != nil {
-		t.Fatalf("signal after exitNoSignal = %v, want nil", err)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start helper: %v", err)
 	}
+	pids := readHelperPIDs(t, pidPath)
+	cleanupReportedPIDs(t, pids)
+
+	r := newRuntime(store, "srv", testLogger(), cmd, func() {}, stdin, time.Minute)
+	done := make(chan error, 1)
+	go func() { done <- r.abortAfterSpawn(errors.New("boom")) }()
 	select {
-	case <-done:
-		t.Fatal("external signal reached the captured group after exitNoSignal")
-	case <-time.After(100 * time.Millisecond):
+	case err := <-done:
+		if err == nil {
+			t.Fatal("abortAfterSpawn = nil, want the abort reason")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("abortAfterSpawn hung; it must kill the direct child before observing exit")
 	}
+	waitReaped(t, pids.Direct)
+	waitGoneOrZombie(t, pids.Grandchild)
 }
 
 // startUnrelatedProcessGroup starts this test binary in the blocking helper

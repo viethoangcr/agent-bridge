@@ -254,6 +254,21 @@ func waitReaped(t *testing.T, pid int) {
 	t.Fatalf("direct child %d was not reaped within deadline", pid)
 }
 
+// requireAliveFor fails if pid disappears or becomes a zombie within window.
+// The window makes an "unsignaled" assertion reliable against signal delivery
+// latency.
+func requireAliveFor(t *testing.T, pid int, window time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(window)
+	for time.Now().Before(deadline) {
+		state, ok := processState(pid)
+		if !ok || state == 'Z' {
+			t.Fatalf("process %d state = %q (present %v), want alive for %s", pid, state, ok, window)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
 // waitGoneOrZombie requires a descendant to disappear or become a zombie.
 func waitGoneOrZombie(t *testing.T, pid int) {
 	t.Helper()

@@ -108,12 +108,12 @@ func (r *Runtime) terminalClosed() bool {
 }
 
 // failPersistence closes the admission gate with ErrPersistence before it
-// kills the process group. Closing the gate first means no post can reserve or
+// kills the direct child. Closing the gate first means no post can reserve or
 // write while the failing path tears down, and failPending (the single terminal
 // path) delivers ErrPersistence to every retained waiter. It never holds the
-// correlation mutex during SQL or signaling.
+// correlation mutex during SQL or signaling. The sole waiter cleans the group.
 func (r *Runtime) failPersistence(cause error) {
 	r.log.Error("persist runtime state", "server_id", r.serverID, "error", cause)
 	r.markTerminal(ErrPersistence)
-	_ = r.killProcessGroup()
+	_ = r.killChild()
 }
