@@ -13,8 +13,9 @@ import (
 	"github.com/viethoangcr/agent-bridge/internal/procgroup"
 )
 
-// pumpBufferSize is the bridge-observed chunk size for managed output. Task 4.4
-// routes these chunks into the process's ring.
+// pumpBufferSize is the bridge-observed chunk size for managed output. pump
+// forwards each chunk to the process's log ring, and capture uses it to drain
+// one-shot output.
 const pumpBufferSize = 8 << 10
 
 // signalGate is the per-group synchronized signal gate. Every external signal

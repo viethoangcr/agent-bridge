@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -224,6 +225,71 @@ func TestServiceWriteFileReadFailurePreservesTarget(t *testing.T) {
 	}
 	if len(entries) != 1 || entries[0].Name() != "existing.txt" {
 		t.Fatalf("temporary file residue after failed write: %d entries", len(entries))
+	}
+}
+
+func TestServiceWriteFileRejectsDirectoryDestination(t *testing.T) {
+	home := t.TempDir()
+	svc := newTestService(t, home)
+	dir := filepath.Join(home, "adir")
+	mustMkdir(t, dir)
+	mustWriteFile(t, filepath.Join(dir, "keep.txt"), "keep", 0o644)
+
+	_, err := svc.WriteFile("adir", strings.NewReader("replacement"))
+	if kind := errorKind(t, err); kind != ErrorKindConflict {
+		t.Fatalf("WriteFile over directory kind = %q, want conflict", kind)
+	}
+	info, statErr := os.Lstat(dir)
+	if statErr != nil || !info.IsDir() {
+		t.Fatalf("directory destination changed: info=%v err=%v", info, statErr)
+	}
+	if got, readErr := os.ReadFile(filepath.Join(dir, "keep.txt")); readErr != nil || string(got) != "keep" {
+		t.Fatalf("directory contents changed: %q err=%v", got, readErr)
+	}
+	if entries, readErr := os.ReadDir(home); readErr != nil || len(entries) != 1 {
+		t.Fatalf("temporary residue after rejected write: entries=%v err=%v", entries, readErr)
+	}
+}
+
+func TestServiceWriteFileRejectsSymlinkDestination(t *testing.T) {
+	home := t.TempDir()
+	svc := newTestService(t, home)
+	mustWriteFile(t, filepath.Join(home, "target.txt"), "original", 0o644)
+	mustSymlink(t, "target.txt", filepath.Join(home, "link"))
+
+	_, err := svc.WriteFile("link", strings.NewReader("replacement"))
+	if kind := errorKind(t, err); kind != ErrorKindConflict {
+		t.Fatalf("WriteFile over symlink kind = %q, want conflict", kind)
+	}
+	if got, readErr := os.ReadFile(filepath.Join(home, "target.txt")); readErr != nil || string(got) != "original" {
+		t.Fatalf("symlink target changed: %q err=%v", got, readErr)
+	}
+	info, statErr := os.Lstat(filepath.Join(home, "link"))
+	if statErr != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("symlink replaced: info=%v err=%v", info, statErr)
+	}
+	entries, readErr := os.ReadDir(home)
+	if readErr != nil || len(entries) != 2 {
+		t.Fatalf("temporary residue after rejected write: entries=%v err=%v", entries, readErr)
+	}
+}
+
+func TestServiceWriteFileRegularOverwriteStaysConsistentOnFailure(t *testing.T) {
+	home := t.TempDir()
+	svc := newTestService(t, home)
+	target := filepath.Join(home, "existing.txt")
+	mustWriteFile(t, target, "original", 0o644)
+
+	src := &failingReader{data: []byte("partial"), err: errors.New("boom")}
+	if _, err := svc.WriteFile("existing.txt", src); errorKind(t, err) != ErrorKindInternal {
+		t.Fatalf("failed overwrite kind = %q, want internal", errorKind(t, err))
+	}
+	if got, err := os.ReadFile(target); err != nil || string(got) != "original" {
+		t.Fatalf("regular file after failed overwrite = %q err=%v, want original", got, err)
+	}
+	entries, err := os.ReadDir(home)
+	if err != nil || len(entries) != 1 || entries[0].Name() != "existing.txt" {
+		t.Fatalf("temporary residue after failed overwrite: entries=%v err=%v", entries, err)
 	}
 }
 

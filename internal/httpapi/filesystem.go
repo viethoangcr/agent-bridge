@@ -9,12 +9,12 @@ import (
 	"github.com/viethoangcr/agent-bridge/internal/filesystem"
 )
 
-// maxFSFileBytes and maxFSUploadBytes are the production 512MiB raw file PUT
-// and upload limits. Server copies them into overridable fields so tests can
-// inject small limits.
+// maxFSFileBytes and maxFSUploadBytes are the production raw file PUT and
+// upload limits, owned by the filesystem package. Server copies them into
+// overridable fields so tests can inject small limits.
 const (
-	maxFSFileBytes   int64 = 512 << 20
-	maxFSUploadBytes int64 = 512 << 20
+	maxFSFileBytes   int64 = filesystem.MaxFileBytes
+	maxFSUploadBytes int64 = filesystem.MaxFileBytes
 )
 
 // errFSBodyTooLarge marks a request body that exceeded the injected limit. The
