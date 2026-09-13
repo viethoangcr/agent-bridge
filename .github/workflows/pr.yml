@@ -1,0 +1,33 @@
+# Pull-request hygiene: enforce a Conventional Commits title.
+#
+# The title becomes the squash-merge commit subject, so it must match the
+# repository's `feat:`, `fix:`, `docs:`, `ci:`, ... convention. The body is
+# guided by .github/pull_request_template.md rather than gated here, so draft
+# and dependency PRs are never blocked on prose.
+
+name: pr
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  title:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate Conventional Commits title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          types='build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test'
+          pattern="^($types)(\([a-z0-9._/-]+\))?!?: .+"
+          if [[ ! "$TITLE" =~ $pattern ]]; then
+            echo "Invalid PR title: $TITLE"
+            echo "Use Conventional Commits, e.g. 'fix(acp): reject over-limit bodies'."
+            echo "Allowed types: ${types//|/, }"
+            exit 1
+          fi
+          echo "PR title is a valid Conventional Commit."
