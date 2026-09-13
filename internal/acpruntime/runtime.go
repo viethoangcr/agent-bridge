@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/viethoangcr/agent-bridge/internal/acpstore"
-	"github.com/viethoangcr/agent-bridge/internal/procgroup"
 )
 
 // waitDelay bounds how long Cmd.Wait may wait for wedged pipes before it
@@ -149,42 +148,13 @@ func Start(ctx context.Context, store *acpstore.Store, serverID string, spec Lau
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.WaitDelay = waitDelay
 
-	stdin, err := cmd.StdinPipe()
+	stdin, stdout, stderr, err := openProcessPipes(cmd, spec.Program)
 	if err != nil {
 		cancel()
-		return nil, fmt.Errorf("acpruntime: stdin pipe for %q: %w", spec.Program, err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		cancel()
-		closePipe(stdin)
-		return nil, fmt.Errorf("acpruntime: stdout pipe for %q: %w", spec.Program, err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		cancel()
-		closePipe(stdin)
-		closePipe(stdout)
-		return nil, fmt.Errorf("acpruntime: stderr pipe for %q: %w", spec.Program, err)
+		return nil, err
 	}
 
-	r := &Runtime{
-		store:          store,
-		serverID:       serverID,
-		log:            log,
-		cmd:            cmd,
-		cancel:         cancel,
-		stdin:          stdin,
-		requestTimeout: requestTimeout,
-		graceDuration:  defaultGraceDuration,
-		corr:           make(map[string]*pendingRequest),
-		terminal:       make(chan struct{}),
-		done:           make(chan struct{}),
-		wake:           make(chan struct{}, 1),
-	}
-	if store != nil {
-		r.appendOutput = store.AppendOutput
-	}
+	r := newRuntime(store, serverID, log, cmd, cancel, stdin, requestTimeout)
 	// CommandContext's default cancellation kills only the direct child;
 	// replace it with a guarded negative-PGID SIGKILL.
 	cmd.Cancel = func() error { return r.killProcessGroup() }
@@ -198,14 +168,7 @@ func Start(ctx context.Context, store *acpstore.Store, serverID string, spec Lau
 		return nil, fmt.Errorf("acpruntime: start %q: %w", spec.Program, err)
 	}
 
-	// Setpgid guarantees the direct child leads its own group, so the PGID
-	// equals the child PID even when the lookup itself fails.
-	pgid := cmd.Process.Pid
-	if captured, err := syscall.Getpgid(cmd.Process.Pid); err == nil && captured > 1 {
-		pgid = captured
-	}
-	r.pgid.Store(int64(pgid))
-	r.pid.Store(int64(cmd.Process.Pid))
+	r.captureProcessGroup()
 
 	// A cancellation that raced the spawn was not seen by the guard above
 	// (pgid was not yet captured); observe it now before publishing live.
@@ -224,6 +187,30 @@ func Start(ctx context.Context, store *acpstore.Store, serverID string, spec Lau
 	go r.waitProcess()
 
 	return r, nil
+}
+
+// newRuntime builds the Runtime for one spawned command and wires the
+// store-backed append seam when a store is present. The terminal gate, done,
+// and wakeup channels are created here; startWriter creates the writer channels.
+func newRuntime(store *acpstore.Store, serverID string, log *slog.Logger, cmd *exec.Cmd, cancel context.CancelFunc, stdin io.WriteCloser, requestTimeout time.Duration) *Runtime {
+	r := &Runtime{
+		store:          store,
+		serverID:       serverID,
+		log:            log,
+		cmd:            cmd,
+		cancel:         cancel,
+		stdin:          stdin,
+		requestTimeout: requestTimeout,
+		graceDuration:  defaultGraceDuration,
+		corr:           make(map[string]*pendingRequest),
+		terminal:       make(chan struct{}),
+		done:           make(chan struct{}),
+		wake:           make(chan struct{}, 1),
+	}
+	if store != nil {
+		r.appendOutput = store.AppendOutput
+	}
+	return r
 }
 
 // PID returns the live direct-child process ID, or 0 after exit.
@@ -264,220 +251,5 @@ func (r *Runtime) Kill(ctx context.Context) error {
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
-	}
-}
-
-// waitProcess is the sole cmd.Wait owner. On Linux it first observes the direct
-// child's exit without reaping it, SIGKILLs the captured negative PGID while
-// the zombie still owns the PID so a descendant holding the inherited pipes
-// cannot delay group teardown, and only then reaps with cmd.Wait so the real
-// exit status is available. Platforms without an unreaped observation keep the
-// reap-then-kill order. Either way it closes the terminal gate before killing
-// the group, stops and joins the writer, then joins the pumps and publishes
-// exit.
-func (r *Runtime) waitProcess() {
-	var pid int
-	if r.cmd.Process != nil {
-		pid = r.cmd.Process.Pid
-	}
-	var err error
-	if procgroup.ObserveExit(pid) {
-		r.closeTerminal()
-		_ = r.killProcessGroup()
-		err = r.cmd.Wait()
-	} else {
-		err = r.cmd.Wait()
-		r.closeTerminal()
-		_ = r.killProcessGroup()
-	}
-	// The direct child is reaped: its PID/PGID may be recycled, so clear the
-	// captured group id. No later Kill can then signal a reused group.
-	r.pgid.Store(0)
-	r.stopWriter()
-	r.closeStdin()
-	r.awaitWriterStopped()
-	r.pumps.Wait()
-	r.finish()
-	r.waitErr = err
-	close(r.done)
-}
-
-// writeRaw writes complete record bytes to the child's stdin and reports how
-// many bytes the pipe accepted. The writer goroutine is its only production
-// caller; writeLine remains for direct framing tests.
-func (r *Runtime) writeRaw(record []byte) (int, error) {
-	r.writeMu.Lock()
-	stdin := r.stdin
-	r.writeMu.Unlock()
-	if stdin == nil {
-		return 0, errNotRunning
-	}
-	return stdin.Write(record)
-}
-
-// writeLine writes one newline-delimited payload to the child's stdin.
-func (r *Runtime) writeLine(line []byte) error {
-	buf := make([]byte, 0, len(line)+1)
-	buf = append(buf, line...)
-	buf = append(buf, '\n')
-	_, err := r.writeRaw(buf)
-	return err
-}
-
-// abortAfterSpawn terminates a just-spawned group and records the server
-// exited for any failure between spawn and live publication.
-func (r *Runtime) abortAfterSpawn(reason error, pipes ...io.Closer) error {
-	_ = r.killProcessGroup()
-	_ = r.cmd.Wait()
-	r.cancel()
-	r.closeStdin()
-	for _, pipe := range pipes {
-		closePipe(pipe)
-	}
-	r.markExited()
-	return reason
-}
-
-// finish publishes exit after the pumps have joined: it persists the synthetic
-// agent-exited notification, marks the row exited (failing every pending
-// correlation with ErrExited), and closes the wakeup channel last so consumers
-// can perform a final replay query.
-func (r *Runtime) finish() {
-	r.cancel()
-	r.closeStdin()
-	r.persistSynthetic(agentExitedMethod, nil)
-	r.markExited()
-	r.closeWake()
-}
-
-// markExited records terminal exit, clears the live PID, fails every pending
-// correlation with ErrExited, and marks the server row exited. The first call
-// wins; later calls are idempotent confirmations.
-func (r *Runtime) markExited() {
-	r.pid.Store(0)
-	r.markTerminal(ErrExited)
-}
-
-// markTerminal records terminal exit while serialized by the status mutex so a
-// queued reconciliation observes terminal state and performs no later busy/idle
-// write. It closes the terminal gate first, then fails every pending waiter
-// with the supplied error on the first call, then marks the row exited where
-// storage permits.
-func (r *Runtime) markTerminal(err error) {
-	r.statusMu.Lock()
-	first := !r.statusExited
-	r.statusExited = true
-	r.statusMu.Unlock()
-
-	// Gate before clear: reserve holds corrMu while checking the gate and
-	// inserting, so an insert either precedes failPending's snapshot and is
-	// failed, or observes the closed gate and is rejected.
-	r.closeTerminal()
-	if hook := r.beforeTerminalClear; hook != nil {
-		hook()
-	}
-	r.exited.Store(true)
-
-	// Gate -> stop/drain writer -> clear correlations -> kill: once the gate
-	// and signal are closed and the serializer has drained, no queued record
-	// can be left uncompleted before waiters are failed.
-	r.stopWriter()
-	r.awaitWriterStopped()
-
-	if first {
-		r.failPending(err)
-	}
-	if r.store == nil {
-		return
-	}
-	if markErr := r.store.MarkExited(context.Background(), r.serverID); markErr != nil {
-		r.log.Error("mark server exited", "server_id", r.serverID, "error", markErr)
-	}
-}
-
-// closeTerminal closes the single terminal signal exactly once. The admission
-// gate is marked closed and drained before this returns, so every writer
-// admission either completed its enqueue before closure or observed the closed
-// gate/signal and rejected; nothing can enqueue afterwards.
-func (r *Runtime) closeTerminal() {
-	r.terminalOnce.Do(func() {
-		r.gate.close()
-		close(r.terminal)
-		r.gate.wait()
-	})
-}
-
-// admissionGate serializes writer admission against terminal closure. close
-// marks the gate closed under the mutex; wait blocks until every admit that
-// entered before closure has left.
-type admissionGate struct {
-	mu     sync.Mutex
-	closed bool
-	wg     sync.WaitGroup
-}
-
-// enter reports whether a writer admission may proceed. It returns false once
-// the gate is closed.
-func (g *admissionGate) enter() bool {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.closed {
-		return false
-	}
-	g.wg.Add(1)
-	return true
-}
-
-// leave releases one admitted writer admission.
-func (g *admissionGate) leave() { g.wg.Done() }
-
-// close marks the gate closed; no later enter succeeds.
-func (g *admissionGate) close() {
-	g.mu.Lock()
-	g.closed = true
-	g.mu.Unlock()
-}
-
-// wait blocks until every in-flight admission has left.
-func (g *admissionGate) wait() { g.wg.Wait() }
-
-// terminalClosed reports whether the terminal gate has closed. A runtime built
-// without a terminal channel never reports closed.
-func (r *Runtime) terminalClosed() bool {
-	select {
-	case <-r.terminal:
-		return true
-	default:
-		return false
-	}
-}
-
-// killProcessGroup sends SIGKILL to the captured negative PGID. It is a no-op
-// before the PGID is captured and tolerant of an already-dead group.
-func (r *Runtime) killProcessGroup() error {
-	pgid := r.pgid.Load()
-	if pgid <= 1 {
-		return nil
-	}
-	err := syscall.Kill(int(-pgid), syscall.SIGKILL)
-	if err != nil && !errors.Is(err, syscall.ESRCH) {
-		return err
-	}
-	return nil
-}
-
-func (r *Runtime) closeStdin() {
-	r.writeMu.Lock()
-	stdin := r.stdin
-	r.stdin = nil
-	r.writeMu.Unlock()
-	// Close outside the lock so a writer blocked in Write is unblocked instead
-	// of deadlocking on the mutex.
-	closePipe(stdin)
-}
-
-func closePipe(c io.Closer) {
-	if c != nil {
-		_ = c.Close()
 	}
 }
