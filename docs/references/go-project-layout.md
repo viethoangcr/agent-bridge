@@ -2,15 +2,13 @@
 
 **Date:** 2026-09-12
 **Status:** CURRENT
-**Purpose:** Structural ground rules for the `agent-bridge` repository. The phase plans (`docs/plans/`) define behavior and task order; this document defines where code lives, how packages depend on each other, and the hygiene gates every change must pass.
-
-**Precedence:** specification (`20260815-agent-bridge.md`) > phase plans > this document. If this document conflicts with the plans, the plans win; raise the conflict instead of silently deviating.
+**Purpose:** Structural ground rules for the `agent-bridge` repository: where code lives, how packages depend on each other, and the hygiene gates every change must pass. The operator-facing contract lives in `README.md`, and behavior-level coding rules live in `docs/references/go-coding-standards.md`; update the owning document before the change.
 
 ## 1. Non-negotiable constraints
 
 - One module: `github.com/viethoangcr/agent-bridge`; one binary: `cmd/agent-bridge/main.go`.
 - Exactly Go 1.26.8 (`.tool-versions`, `go.mod` floor plus `toolchain` directive, `make check` guard). Toolchain switching must never change the build.
-- Standard library plus exactly one external module: `modernc.org/sqlite` (pinned v1.57.0, added in Phase 02). No other production or test modules, no `golang.org/x/...`, no third-party test frameworks.
+- Standard library plus exactly one external module: `modernc.org/sqlite` (pinned v1.57.0). No other production or test modules, no `golang.org/x/...`, no third-party test frameworks.
 - `CGO_ENABLED=0`, `-trimpath`, static Linux binary. Runtime is Linux-only.
 - Everything implementation-level lives under `internal/`. No `pkg/`, no public import surface, no versioned API packages.
 - No runtime installs, no public CLI subcommands, no published mock surface. The private mock is reachable only through `AGENT_BRIDGE_INTERNAL_MOCK_AGENT=1`.
@@ -46,7 +44,7 @@ agent-bridge/
 ├── tests/e2e/                   # //go:build e2e Docker tests
 ├── docker/runtime/              # Dockerfile, ignore file, npm manifest/lock
 ├── scripts/verify-agents.sh
-└── docs/{plans,references}/
+└── docs/references/
 ```
 
 Directory rules:
@@ -59,25 +57,25 @@ Directory rules:
 
 ## 3. Package ownership
 
-| Package | Phase | Owns | Must not |
-|---|---|---|---|
-| `cmd/agent-bridge` | 01 | signal wiring, one `app.Run` call, exit code | business logic |
-| `internal/app` | 01+ | top-level service construction, PID file, staged shutdown | HTTP handlers, domain logic, per-server runtime creation |
-| `internal/config` | 01 | environment defaults and validation | read `os.Getenv` directly |
-| `internal/childenv` | 01 | child environment sanitization | know about agents or processes |
-| `internal/lifecycle` | 01 | cleanup registry (separate pre-drain/post-drain instances) | construct services |
-| `internal/httpapi` | 01-05 | `ServeMux`, middleware, problem+json, DTOs, request validation | construct services, stores, runtimes, reapers |
-| `internal/acpstore` | 02 | schema, SQL, sequences, reconciliation, checkpoint | interpret conversation content |
-| `internal/acpruntime` | 02 | resolver, process groups, pumps, `Post` correlation/compaction, stderr | serve HTTP, own server lifecycle policy |
-| `internal/mockagent` | 02 | private deterministic JSONL mock | persist state, expose CLI/HTTP |
-| `internal/acpproxy` | 03 | live instance map, per-server runtime creation via injected factory, recreation, reaper, subscriptions, delete/shutdown | parse output, match IDs, persist, own request deadlines, lifecycle-grace, or correlation timers |
-| `internal/process` | 04 | process groups, log rings, one-shot runs, process config | PTY/WebSocket/follow/restart/owner features |
-| `internal/procgroup` | 02, 04 | shared Linux `waitid(WNOWAIT)` process-group observation used by the process and runtime waiters | own lifecycle, signaling, or reaping |
-| `internal/filesystem` | 05 | path resolution, mutations, staged uploads | project-config semantics |
-| `internal/projectconfig` | 05 | mcp/skills files with atomic writes | duplicate path resolution (reuse `filesystem`) |
-| `internal/integration` | 03-04 | cross-package behavior tests | production exports |
-| `internal/projectdocs` | 01, 06 | documentation/contract tests | production exports |
-| `tests/e2e` | 06 | Docker E2E harness | Docker-specific branches in production code |
+| Package | Owns | Must not |
+|---|---|---|
+| `cmd/agent-bridge` | signal wiring, one `app.Run` call, exit code | business logic |
+| `internal/app` | top-level service construction, PID file, staged shutdown | HTTP handlers, domain logic, per-server runtime creation |
+| `internal/config` | environment defaults and validation | read `os.Getenv` directly |
+| `internal/childenv` | child environment sanitization | know about agents or processes |
+| `internal/lifecycle` | cleanup registry (separate pre-drain/post-drain instances) | construct services |
+| `internal/httpapi` | `ServeMux`, middleware, problem+json, DTOs, request validation | construct services, stores, runtimes, reapers |
+| `internal/acpstore` | schema, SQL, sequences, reconciliation, checkpoint | interpret conversation content |
+| `internal/acpruntime` | resolver, process groups, pumps, `Post` correlation/compaction, stderr | serve HTTP, own server lifecycle policy |
+| `internal/mockagent` | private deterministic JSONL mock | persist state, expose CLI/HTTP |
+| `internal/acpproxy` | live instance map, per-server runtime creation via injected factory, recreation, reaper, subscriptions, delete/shutdown | parse output, match IDs, persist, own request deadlines, lifecycle-grace, or correlation timers |
+| `internal/process` | process groups, log rings, one-shot runs, process config | PTY/WebSocket/follow/restart/owner features |
+| `internal/procgroup` | shared Linux `waitid(WNOWAIT)` process-group observation used by the process and runtime waiters | own lifecycle, signaling, or reaping |
+| `internal/filesystem` | path resolution, mutations, staged uploads | project-config semantics |
+| `internal/projectconfig` | mcp/skills files with atomic writes | duplicate path resolution (reuse `filesystem`) |
+| `internal/integration` | cross-package behavior tests | production exports |
+| `internal/projectdocs` | documentation/contract tests | production exports |
+| `tests/e2e` | Docker E2E harness | Docker-specific branches in production code |
 
 ## 4. Dependency direction
 
@@ -92,9 +90,12 @@ flowchart LR
   app --> filesystem
   app --> projectconfig
   app --> config
+  app --> childenv
   app --> lifecycle
+  app --> mockagent
   httpapi --> acpproxy
   httpapi --> acpstore
+  httpapi --> acpruntime
   httpapi --> process
   httpapi --> filesystem
   httpapi --> projectconfig
@@ -102,11 +103,14 @@ flowchart LR
   acpproxy --> acpstore
   acpruntime --> acpstore
   acpruntime --> childenv
+  acpruntime --> config
   acpruntime --> procgroup
-  process --> childenv
   process --> procgroup
   projectconfig --> filesystem
 ```
+
+The graph tracks production imports only; test-only imports (for example
+`process` importing `childenv` in tests) are omitted.
 
 - Dependencies point downward; imports must not cycle.
 - `httpapi` consumes service types but never constructs them. `internal/app` constructs top-level services (stores, managers, mutexes, reapers, proxy) and injects their dependencies; `acpproxy` creates per-server runtimes through its injected runtime factory. Tests may construct their own instances.
@@ -121,7 +125,7 @@ flowchart LR
 - Doc comments are the API contract: signatures plus `go doc -all ./internal/<pkg>` must let an agent or reviewer understand a package's types, invariants, ownership, and error semantics without reading implementation bodies. Keep comments contract-level; mechanics stay in the body.
 - Errors: sentinel `ErrX` values for conditions the transport maps; wrap internal failures with `%w` only when callers must inspect them; error strings are lowercase without trailing punctuation and never embed stack traces.
 - Environment variables use the `AGENT_BRIDGE_` prefix. Duration variables end `_MS` and are parsed with checked conversion. `config.Load` is the only interpreter of public configuration variables and receives a `getenv` function; `app` may perform private dispatch and capture `os.Environ` for `childenv.Sanitized`, but services never read mutable environment state.
-- `context.Context` is the first parameter for blocking, cancellable, SQL, HTTP, subprocess, and lifecycle operations; propagate request/root contexts, call every derived cancel function, and never store contexts in structs. Some Phase 05 service methods are intentionally synchronous and context-free.
+- `context.Context` is the first parameter for blocking, cancellable, SQL, HTTP, subprocess, and lifecycle operations; propagate request/root contexts, call every derived cancel function, and never store contexts in structs. Some filesystem and project-config service methods are intentionally synchronous and context-free.
 - SQL table and column names are snake_case; sequence values and DTOs are `int64` end-to-end.
 - HTTP routes use Go 1.22+ method/path patterns. The root is `GET /{$}`; one methodless `/` fallback owns 404/405 by probing `mux.Handler`. Never register methodless same-path fallbacks (startup panic).
 - JSON DTOs expose exactly the documented fields and reject unknown fields and trailing values. Agent-output bytes are preserved exactly after JSONL framing removal through SQLite, synchronous ACP responses, and SSE; only `Runtime.Post` applies `json.Compact` to validated client input.
@@ -140,7 +144,7 @@ flowchart LR
 
 - Unit tests live next to their package (`foo.go` -> `foo_test.go`). Use the external test package (`package foo_test`) when exercising only the exported API, and the internal package when a seam requires it.
 - Cross-package behavior tests live in `internal/integration`; Docker-only tests live in `tests/e2e`.
-- Every task follows the plan's RED/GREEN policy: a failing behavioral assertion first, then the implementation, then a focused verification command. Missing files or symbols are setup evidence, not RED.
+- Every change follows RED/GREEN: a failing behavioral assertion first, then the implementation, then a focused verification command. Missing files or symbols are setup evidence, not RED.
 - All timing tests use injected clocks, tickers, and size limits. The single repository-wide real-time exception is `TestRealHeartbeat15Seconds`, run once with a bounded deadline and without race/repetition.
 - No third-party test dependencies; `testing`, `net/http/httptest`, `testing/synctest`, and the test-binary re-exec pattern cover the need.
 - Process-test evidence rules, benchmark/allocation conventions, and other test style details live in `docs/references/go-coding-standards.md` section 12.
@@ -148,7 +152,7 @@ flowchart LR
 
 ## 8. Tooling and hygiene
 
-Required gates (encoded in Phase 01 Task 1.1 and the Phase 06 CI workflow):
+Required gates (also enforced by `.github/workflows/ci.yml`):
 
 ```sh
 test "$(go env GOVERSION)" = go1.26.8
@@ -162,19 +166,19 @@ CGO_ENABLED=0 go build -trimpath -o bin/agent-bridge ./cmd/agent-bridge
 ```
 
 - Dev-time tools run through `go run pkg@version`; they never enter `go.mod`/`go.sum`.
-- Once `tests/e2e` exists, `lint` and `vuln` add `-tags=e2e`; every file in the tagged package carries the tag.
+- `lint` and `vuln` add `-tags=e2e`; every file in the tagged package carries the tag.
 - Never modify the root `.gitignore`; never commit `bin/`, SQLite databases, WAL files, PID files, or `node_modules`.
-- CI lives in `.github/workflows/ci.yml`: full 40-character SHA action pins, read-only formatting drift detection, and the job gating described in Phase 06.
+- CI lives in `.github/workflows/ci.yml`: full 40-character SHA action pins, read-only formatting drift detection, and staged trunk/release gates.
 - Behavior-level coding rules are in `docs/references/go-coding-standards.md`.
 
 ## 9. Changing the rules
 
-- A new package, dependency, environment variable, HTTP route, or exported type requires a specification or plan update first. The plans are the contract; this document only allocates structure.
-- Keep the exported surface minimal: inside `internal/` everything is importable, but every exported symbol is a commitment shared with parallel phases.
+- A new package, dependency, environment variable, HTTP route, or exported type requires a document update first: this file for structure, ownership, and dependency edges; `README.md` for operator-visible behavior.
+- Keep the exported surface minimal: inside `internal/` everything is importable, but every exported symbol is a commitment other packages and tests depend on.
 - When in doubt, follow the nearest existing pattern in the repository instead of inventing a new one.
 
 ## 10. Related documents
 
+- `README.md` - operator-facing contract: build, run, configuration, APIs, and limits.
 - `docs/references/go-coding-standards.md` - behavior-level coding rules (errors, concurrency, testing, performance, security).
 - `docs/references/acp-v1-protocol.md` - ACP v1 factual baseline.
-- `docs/plans/20260815-agent-bridge.md` - authoritative specification.

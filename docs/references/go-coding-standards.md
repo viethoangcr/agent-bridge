@@ -2,9 +2,7 @@
 
 **Date:** 2026-09-12
 **Status:** CURRENT
-**Purpose:** Behavior-level coding rules for `agent-bridge`, distilled from official Go guidance and "100 Go Mistakes and How to Avoid Them" (Teiva Harsanyi), and tuned for Go 1.26.8, the standard library, and this project's concurrency/subprocess/filesystem surface.
-
-**Precedence:** specification (`20260815-agent-bridge.md`) > phase plans > this document. If a rule conflicts with a plan requirement, the plan wins; flag the conflict rather than deviating silently.
+**Purpose:** Behavior-level coding rules for `agent-bridge`, distilled from official Go guidance and "100 Go Mistakes and How to Avoid Them" (Teiva Harsanyi), and tuned for Go 1.26.8, the standard library, and this project's concurrency/subprocess/filesystem surface. If a rule conflicts with `README.md` or `docs/references/go-project-layout.md`, flag the conflict rather than deviating silently.
 
 **Top rules (if you read nothing else):**
 
@@ -38,7 +36,7 @@ Use (available in the pinned toolchain):
 | `http.MaxBytesReader` / `http.MaxBytesError` | existing / 1.19 | bounded request bodies; map over-limit to 413 |
 | `crypto/rand.Text` | 1.24 | generating tokens/secrets |
 | `database/sql.Null[T]` | 1.22 | nullable columns without manual `Valid` plumbing |
-| `os.Root` (expanded method set) | 1.24+ (check pinned patch advisories) | path confinement for one relative tree; not a substitute for the Phase 05 contract (see Section 9) |
+| `os.Root` (expanded method set) | 1.24+ (check pinned patch advisories) | path confinement for one relative tree; not a substitute for the filesystem contract (see Section 9) |
 | `runtime.AddCleanup` | 1.24 | leak backstop only; explicit `Close` stays authoritative (nondeterministic timing) |
 | `json` `omitzero` tag | 1.24 | omit zero structs; keep `omitempty` only for empty containers |
 | `testing/synctest`, `T.Context`, `T.Chdir`, `B.Loop` | 1.25 / 1.24 | time-virtualized concurrency tests; subprocess lifetimes; non-parallel cwd tests; benchmarks |
@@ -69,7 +67,7 @@ Do not rely on:
 - Do not duplicate logging of the same failure across layers: log at the boundary that owns the recovery or response, otherwise return the wrapped error (#52). Do not discard errors; annotate intentional ignores (`_ = f.Close() // best effort`).
 - Do not panic for expected failures (#48). Recover only at an explicit boundary; none exists in this project today, so no stray `recover()`.
 - `defer` close/release errors are captured and joined: `defer func() { err = errors.Join(err, f.Close()) }()` (#54).
-- HTTP handlers never expose internal error detail: centrally map owner-package typed errors to the specification's problem statuses and stable `detail` text, log the underlying error server-side, and keep ACP JSON-RPC error envelopes as HTTP 200.
+- HTTP handlers never expose internal error detail: centrally map owner-package typed errors to the documented problem statuses and stable `detail` text, log the underlying error server-side, and keep ACP JSON-RPC error envelopes as HTTP 200.
 - Startup configuration errors fail fast with the variable name and never print secret values.
 
 ## 4. Interfaces, types, and generics
@@ -108,15 +106,15 @@ Do not rely on:
 - Channel buffer sizes: 0 for synchronization, 1 for a one-slot handoff/wakeup, larger only with evidence (#67).
 - `select` with multiple ready cases is random; handle every case and never rely on ordering (#64).
 - Use typed atomics (`atomic.Int64`, `atomic.Pointer[T]`); they do not replace mutexes for compound invariants.
-- The race detector finds data races on executed paths only; it does not prove correctness (#58). CI runs `-race`; tests run `-race -count=N` where the plans specify.
+- The race detector finds data races on executed paths only; it does not prove correctness (#58). CI runs `-race`; focused concurrency tests run `-race -count=N`.
 - Project lock rules: never hold global/live-map, lifecycle, status, or correlation locks during store I/O, `Post`, signals, waits, or pump joins. Status reconciliation may briefly read correlation state while holding the status lock, never in the inverse order. Reaping gates activity, waits, then rechecks generation and durable status before killing; DELETE/shutdown gate and kill before waiting for leases; the injected filesystem mutation mutex serializes bridge-originated mutations.
-- SQLite: the store uses `SetMaxOpenConns(1)` with the exact escaped DSN pragmas from the specification, including `_txlock=immediate`; let `database/sql` serialize callers. Consume and `Close` `Rows` before another operation on the single connection, check every `rows.Err()`, use context-aware SQL methods, and keep transactional sequence allocation `int64`.
+- SQLite: the store uses `SetMaxOpenConns(1)` with the exact escaped DSN pragmas, including `_txlock=immediate`; let `database/sql` serialize callers. Consume and `Close` `Rows` before another operation on the single connection, check every `rows.Err()`, use context-aware SQL methods, and keep transactional sequence allocation `int64`.
 
 ## 7. Subprocesses and OS resources
 
 - `exec.CommandContext` with an explicit `Cmd.Env` (from `childenv.Sanitized`) and an explicit `Cmd.Dir`; resolve agent binaries to absolute paths (#81 applies to timeouts, see below).
 - Set `Setpgid: true`; after successful start, capture and validate the owned PGID (`>1`) before `syscall.Kill(-pgid, sig)`. Never signal a bare child PID and never derive signaling targets from persisted state.
-- Set `Cmd.WaitDelay` so `Wait` cannot hang on wedged pipes; replace default cancellation with guarded negative-PGID SIGKILL when the plans require it.
+- Set `Cmd.WaitDelay` so `Wait` cannot hang on wedged pipes; replace default cancellation with guarded negative-PGID SIGKILL when the contract requires it.
 - One owner calls `Cmd.Wait` exactly once; project wrappers (`Runtime.Kill/Wait`, manager operations) provide idempotent ownership around it.
 - On every direct-child exit, SIGKILL the captured negative PGID before awaiting pumps or releasing capacity, so descendants cannot survive the group leader.
 - Close pipes immediately after use; drains run to EOF so children cannot block on a full pipe.
@@ -139,7 +137,7 @@ Do not rely on:
 - Validate at trust boundaries: strict JSON, bounded sizes, explicit path checks. Treat subprocess output as untrusted.
 - Compare tokens with `sha256.Sum256` + `crypto/subtle.ConstantTimeCompare`; generate secrets with `crypto/rand.Text`; never `==` on secrets.
 - Filesystem behavior is spec-defined: lexical component checks before cleaning, `Lstat` symlink rechecks before mutation, and the sandbox (not pathname checks) is the security boundary. Lexical checks alone are not confinement.
-- Where a single confined tree is the actual surface (e.g., staging directories), prefer `os.Root` (Linux, Go 1.24+, full method set in 1.26): the kernel enforces the boundary, including symlink escapes, without TOCTOU reviews. Do not retrofit `os.Root` into the Phase 05 contract without a spec update.
+- Where a single confined tree is the actual surface (e.g., staging directories), prefer `os.Root` (Linux, Go 1.24+, full method set in 1.26): the kernel enforces the boundary, including symlink escapes, without TOCTOU reviews. Do not retrofit `os.Root` into the filesystem contract without a documented contract update.
 - Uploads: reject absolute/escaping names, links/devices, symlink components, duplicate paths, trailing bytes; validate and extract into staging before merge.
 - Config writes are atomic (same-directory temp, `0600`, `fsync`, rename) under the shared mutation mutex.
 - Error messages at the API boundary do not leak host paths, SQL text, or stack traces.
@@ -150,7 +148,7 @@ Do not rely on:
 - Prefer `time.NewTimer` + `Stop` or `context.WithTimeout` over `time.After` in loops (#76).
 - Inject clocks/tickers for tests; production uses `time.Now` behind the same seam.
 - Use `testing/synctest` when concurrency and time interact; otherwise injected clocks are the default.
-- TTL/timer semantics follow the plans exactly (idle TTL, 30s lifecycle grace, fixed server-owned input deadline).
+- TTL/timer semantics are contract-defined (idle TTL, 30s lifecycle grace, fixed server-owned input deadline).
 
 ## 11. Logging
 
@@ -166,10 +164,10 @@ Do not rely on:
 - Use `t.Helper` in helpers, `t.Cleanup` for teardown, `t.TempDir` for files, and `t.Context` for subprocess/HTTP lifetimes. `t.Chdir` changes process-wide cwd and is only valid in non-parallel tests with no parallel ancestor.
 - No sleeps: synchronize on channels/events, inject clocks, or use `testing/synctest`; the only real-time test is the single `TestRealHeartbeat15Seconds` (#86, #87).
 - Use stdlib utilities: `httptest`, `testing/fstest`, `os/exec` re-exec helpers (#88).
-- Build tags: `//go:build e2e` for Docker tests; the plans define the only tag and skip rules (#82). Fuzzing is out of scope unless a plan adds its corpus location and CI budget.
-- CI runs `-race ./...`; focused concurrency tests run `-race -count=N` per the plans (#83).
+- Build tags: `//go:build e2e` for Docker tests, the only tag; e2e tests skip only when Docker is unavailable. Fuzzing is out of scope (#82).
+- CI runs `-race ./...`; focused concurrency tests run `-race -count=N` (#83).
 - Benchmarks: `b.Loop()`, `-benchmem`, `benchstat` for comparisons; `testing.AllocsPerRun` for allocation ceilings (not under `t.Parallel`) (#89).
-- Prefer behavioral RED evidence per the plans: a failing assertion against a seam, not a missing symbol.
+- Prefer behavioral RED evidence: a failing assertion against a seam, not a missing symbol.
 
 ## 13. Performance and allocations
 
@@ -212,6 +210,6 @@ Do not rely on:
 
 ## 15. Related documents
 
+- `README.md` - operator-facing contract: build, run, configuration, APIs, and limits.
 - `docs/references/go-project-layout.md` - package layout, ownership, and hygiene gates.
 - `docs/references/acp-v1-protocol.md` - ACP v1 factual baseline.
-- `docs/plans/20260815-agent-bridge.md` - authoritative specification and task conventions.

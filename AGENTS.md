@@ -3,27 +3,25 @@
 These rules are binding for every change in this repository. They are
 enforceable by review and by `internal/projectdocs`.
 
-## Precedence and order
+## Documents
 
-- `docs/plans/20260815-agent-bridge.md` is the authoritative contract. Phase
-  plans elaborate it; where a phase plan or a reference doc conflicts with the
-  specification, the specification has precedence.
-- Execute implementation plans in numeric order, except where the
-  specification explicitly allows phases 04 and 05 to run in parallel.
-- Read the task's plan entry and every file it references before writing code.
+- `README.md` is the operator-facing contract: build, run, configuration, APIs, and limits.
+- `docs/references/go-project-layout.md` owns layout, package ownership, dependency direction, and hygiene.
+- `docs/references/go-coding-standards.md` owns behavior-level coding rules.
+- `docs/references/acp-v1-protocol.md` is the ACP v1 factual baseline.
+- Update the owning document before the change and flag conflicts instead of silently deviating.
 
 ## Dependencies and platform
 
 - Use the Go standard library plus exactly one external module:
-  `modernc.org/sqlite`, and only from Phase 02 onward. No other production or
-  test modules; dev tools run only through pinned `go run ...@version` so
+  `modernc.org/sqlite` (pinned v1.57.0). No other production or test modules;
+  dev tools run only through pinned `go run ...@version` so
   `go.mod`/`go.sum` stay dependency-free.
 - Build with `CGO_ENABLED=0`, `-trimpath`, as one static Linux binary.
 - No runtime installs: the bridge never downloads, installs, or updates agents.
-- Do not expand into the specification's out of scope features. PTY/terminal
-  WebSocket, desktop APIs, agent install/list APIs, `/opencode` compatibility,
-  Inspector UI, telemetry, daemon mode, and public CLI subcommands stay out of
-  scope.
+- Do not expand into features that are out of scope. PTY/terminal WebSocket,
+  desktop APIs, agent install/list APIs, `/opencode` compatibility, Inspector
+  UI, telemetry, daemon mode, and public CLI subcommands stay excluded.
 - There is no public mock interface. The private mock is reachable only through
   `AGENT_BRIDGE_INTERNAL_MOCK_AGENT=1` and is never documented publicly.
 
@@ -36,16 +34,16 @@ enforceable by review and by `internal/projectdocs`.
   for production-duration timers. Keep the single bounded real-time heartbeat
   test as the only exception.
 - No third-party test frameworks; use `testing` and the standard library.
-- Tests must stay green under `-race` where the plan requires it.
+- Tests must stay green under `-race`.
 
 ## Writing code and packages
 
-- Follow `docs/references/go-coding-standards.md`; a plan requirement wins over
-  it, and the conflict is flagged rather than silently resolved.
-- New package: update the specification or phase plan first, add the directory
-  under `internal/`, add its row to the ownership table and any edge to the
-  dependency graph in `docs/references/go-project-layout.md`, and add a package
-  comment (`doc.go` when the overview exceeds a short paragraph).
+- Follow `docs/references/go-coding-standards.md`; flag conflicts instead of
+  silently resolving them.
+- New package: update `docs/references/go-project-layout.md` first (add the
+  directory under `internal/`, its row in the ownership table, and any
+  dependency-graph edge), and add a package comment (`doc.go` when the overview
+  exceeds a short paragraph).
 - One package per directory; no `util`, `common`, `helpers`, `shared`, or
   `pkg/`. Define interfaces on the consumer side and return concrete types.
 - Every exported symbol has a doc comment; acronyms are consistently cased.
@@ -75,8 +73,3 @@ Before every commit and in CI:
   `go run`.
 - `make check` composes the exact-Go 1.26.8 guard, tests, lint, a static build,
   and the formatting/tidy checks.
-
-## Ground-rules documents
-
-- `docs/references/go-project-layout.md` — layout, package ownership, hygiene.
-- `docs/references/go-coding-standards.md` — behavior-level coding standards.

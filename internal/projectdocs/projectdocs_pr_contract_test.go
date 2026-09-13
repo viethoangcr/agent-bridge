@@ -55,7 +55,7 @@ func TestPullRequestTemplateAndClaudeDocs(t *testing.T) {
 	for _, section := range []string{
 		"Conventional Commits",
 		"## Summary",
-		"## Plan / phase",
+		"## Context",
 		"## Testing",
 		"## Hygiene",
 		"## Risk / rollback",

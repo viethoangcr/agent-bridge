@@ -3,8 +3,8 @@
 **Date:** 2026-09-02
 **Revised:** 2026-09-12
 **Status:** CURRENT
-**Scope:** ACP v1 only. The bridge implements and passes through ACP protocol version 1 (`"protocolVersion": 1`); the ACP v2 draft (published 2026-07-20) is out of scope until it is stable and the specification is revised.
-**Purpose:** Factual baseline for the agent-bridge plans (`docs/plans/`). All bridge behavior claims about ACP must be checked against this document and the sources below.
+**Scope:** ACP v1 only. The bridge implements and passes through ACP protocol version 1 (`"protocolVersion": 1`); the ACP v2 draft (published 2026-07-20) is out of scope until it is stable.
+**Purpose:** Factual baseline for agent-bridge's ACP v1 behavior. All bridge behavior claims about ACP must be checked against this document and the sources below.
 
 ## Sources
 
@@ -95,7 +95,7 @@ Session lifecycle requests also accept optional absolute `additionalDirectories`
 
 ## 7. Coding agents (stable versions verified 2026-09-12)
 
-| Agent | Package (current) | Pinned in plans | Binary | Launch | Node | Keyless behavior |
+| Agent | Package (current) | Pinned version | Binary | Launch | Node | Keyless behavior |
 |---|---|---|---|---|---|---|
 | Claude | `@agentclientprotocol/claude-agent-acp` — **latest 0.76.0 (2026-09-09)** | 0.68.0 (valid, stale) | `claude-agent-acp` | `claude-agent-acp` (no args) | >=22 | `initialize` succeeds; **auth failure surfaces at `session/prompt`** as `-32000` (`RequestError.authRequired()`); expired creds may surface as `-32603`. Bundles Claude Agent SDK (includes Claude Code executable, large). Auth via `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, or `~/.claude`. |
 | Codex | `@agentclientprotocol/codex-acp` — **latest 1.11.0 (2026-09-09)** | 1.3.0 (valid, stale) | `codex-acp` | `codex-acp` (no args) | Node (TS adapter) | Advertises ChatGPT-login + API-key auth methods; **`NO_BROWSER=1` hides browser login (official headless var)**. Auth failure in-band; bundles `@openai/codex` Rust binary (npm dep, `CODEX_PATH` override). |
@@ -104,7 +104,7 @@ Session lifecycle requests also accept optional absolute `additionalDirectories`
 - Deprecated predecessors: `@zed-industries/claude-code-acp` (→ 0.16.2), `@zed-industries/codex-acp` (→ 0.16.0). Do not use.
 - Headless env conventions: `NO_BROWSER=1` (official, codex-acp README); `DISABLE_AUTOUPDATER=1`, `CI=true` are Claude Code community conventions, not ACP-official. Writable `HOME` required (`~/.claude`, `CLAUDE_CONFIG_DIR`).
 - Image ≥1GB is expected: Claude SDK bundles the Claude Code executable; Codex bundles the Rust binary; only the matching OpenCode platform optionalDependency downloads.
-- Latest-version values drift and are date-stamped; the pinned plan versions remain deliberate (behavioral stability), and bumping any pin requires re-running the keyless matrix. When bumping, use the stable `latest` dist-tag; `preview`, `beta`, `next`, `dev`, and snapshot releases are never used.
+- Latest-version values drift and are date-stamped; the pinned versions remain deliberate (behavioral stability), and bumping any pin requires re-running the keyless matrix. When bumping, use the stable `latest` dist-tag; `preview`, `beta`, `next`, `dev`, and snapshot releases are never used.
 
 ### 7.1 ACP tooling versions (stable, verified 2026-09-12)
 
@@ -119,11 +119,11 @@ Session lifecycle requests also accept optional absolute `additionalDirectories`
 
 `authenticate`/`logout` → `auth/login`/`auth/logout`; **`session/load` removed** (replaced by `session/resume` + `replayFrom`); `session/list`/`close`/`resume` become required baseline; `fs/*` and `terminal/*` client methods removed; `session/set_mode` removed; `session/prompt` responds immediately (stop reason moves to `state_update` notification); `tool_call` variant removed; modes → config options; batching formally allowed. If v2 support is ever added, the bridge's lifecycle enum (`none|new|load|resume`) and its HTTP contract change shape. v2 is excluded from this project: while it remains draft, no v2 code paths, feature flags, or conditional branches are implemented.
 
-## 9. Implications for the agent-bridge plans
+## 9. Implications for agent-bridge
 
 1. The bridge's HTTP/SSE layer is a custom transport extension — permissible ("custom transports must preserve JSON-RPC framing"), but it is not part of ACP; document it as such.
-2. "Session lifecycle/scoped messages" in the plans should be replaced with the explicit field map in §5: `cwd` on `session/new|load|resume` only (matches the plans' "lifecycle cwd"); `sessionId` on the enumerated session-scoped methods. Response envelopes carry no `sessionId`; the bridge attributes them from the retained request `sessionId` for the same method list.
-3. `session/prompt` stays pending for the whole turn — coding-agent turns routinely exceed 120s, so the original `AGENT_BRIDGE_ACP_REQUEST_TIMEOUT_MS=120000` default guaranteed frequent 504s. The plans adopted a 600000 ms default (2026-09-12 revision); beyond that, non-lifecycle correlation is released, the late response is persisted, and updates continue via SSE — recoverable, but documented.
+2. Session lifecycle/scoped messages use the explicit field map in §5: `cwd` on `session/new|load|resume` only (the lifecycle cwd rule); `sessionId` on the enumerated session-scoped methods. Response envelopes carry no `sessionId`; the bridge attributes them from the retained request `sessionId` for the same method list.
+3. `session/prompt` stays pending for the whole turn — coding-agent turns routinely exceed 120s, so the original `AGENT_BRIDGE_ACP_REQUEST_TIMEOUT_MS=120000` default guaranteed frequent 504s. The bridge adopts a 600000 ms default (2026-09-12 revision); beyond that, non-lifecycle correlation is released, the late response is persisted, and updates continue via SSE — recoverable, but documented.
 4. Terminal-type auth methods cannot be fulfilled through the bridge (it owns spawning; no TTY). Document as a limitation; env-based auth remains the supported path.
 5. `session/load` obligates the agent to replay the full conversation as `session/update` before responding — a load through the bridge produces a large persisted-event burst (retention is unbounded until DELETE). The private mock does not replay (acceptable; it makes no conformance promise — E2E must not assert replay from the mock).
 6. Keyless E2E outcomes must match real adapter behavior: Claude errors at prompt (so `session/new` likely succeeds — plain success is the observable keyless outcome), Codex errors in-band with `-32000`; OpenCode succeeds at `session/new` and fails at prompt. Structural auth matching should assert JSON-RPC code `-32000` explicitly.

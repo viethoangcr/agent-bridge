@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestReadmeDocumentsPhase01Contract(t *testing.T) {
+func TestReadmeDocumentsDeveloperContract(t *testing.T) {
 	readme := readRepoFile(t, "README.md")
 
 	for _, fragment := range []string{
@@ -29,7 +29,6 @@ func TestReadmeDocumentsPhase01Contract(t *testing.T) {
 		"non-loopback",
 		"unsafe",
 		"Authorization: Bearer",
-		"docs/plans/20260815-agent-bridge.md",
 		"docs/references/go-project-layout.md",
 		"docs/references/go-coding-standards.md",
 	} {
@@ -170,9 +169,6 @@ func TestAgentsDocumentedRules(t *testing.T) {
 	agents := readRepoFile(t, "AGENTS.md")
 
 	for _, fragment := range []string{
-		"docs/plans/20260815-agent-bridge.md",
-		"precedence",
-		"numeric order",
 		"modernc.org/sqlite",
 		"test-first",
 		"RED",
@@ -219,7 +215,7 @@ func TestLayoutDocumentCoversEveryPackage(t *testing.T) {
 	}
 }
 
-func TestMakefileProvidesPhase01Commands(t *testing.T) {
+func TestMakefileProvidesRequiredCommands(t *testing.T) {
 	makefile := readRepoFile(t, "Makefile")
 
 	for _, fragment := range []string{
