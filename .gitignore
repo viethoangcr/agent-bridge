@@ -1,0 +1,23 @@
+# Build outputs
+/bin/
+*.test
+coverage.out
+coverage.html
+
+# Local runtime state (SQLite, PID, logs)
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.pid
+*.log
+
+# Node
+node_modules/
+
+# Editor and OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
