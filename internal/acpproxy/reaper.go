@@ -166,7 +166,13 @@ func (p *Proxy) reapInstance(ctx context.Context, inst *instance, now time.Time)
 	// Close streams first so the runtime's own termination fan-out cannot let a
 	// final replay race past the hard close.
 	p.closeSubscriptions(inst)
-	_ = rt.Kill(ctx)
+	if p.killRuntime(ctx, inst, rt) != nil {
+		// The process could not be confirmed dead: do not drop ownership. Keep
+		// the instance live and its capacity consumed, clear the gate so a later
+		// sweep retries, and leave subscriptions closed.
+		p.clearTerminating(inst)
+		return
+	}
 	p.dropLive(inst)
 }
 

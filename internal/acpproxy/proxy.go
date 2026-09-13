@@ -515,18 +515,42 @@ func (p *Proxy) create(ctx context.Context, lk *lifecycleLock, inst *instance, s
 // abandonCreate removes a placeholder, releases exactly one capacity slot, and
 // wakes its waiters, which inherit err. A spawn that could not be published is
 // killed first, outside every lock, so no process survives a delete or shutdown
-// that gated the placeholder mid-spawn.
+// that gated the placeholder mid-spawn. If that kill fails, the runtime stays
+// tracked and gated so DELETE, shutdown, or the reaper can retry terminating
+// it: its capacity stays consumed until it is confirmed gone.
 func (p *Proxy) abandonCreate(ctx context.Context, inst *instance, rt runtime, err error) error {
-	if rt != nil {
-		_ = rt.Kill(context.WithoutCancel(ctx))
-	}
+	retained := rt != nil && p.killRuntime(context.WithoutCancel(ctx), inst, rt) != nil
 	lk := inst.lock
 	lk.mu.Lock()
-	p.dropLive(inst)
+	if retained {
+		inst.runtime = rt
+		inst.terminating = true
+		inst.detached = true
+	} else {
+		p.dropLive(inst)
+	}
 	inst.createErr = err
 	inst.creating = false
 	close(inst.ready)
 	lk.mu.Unlock()
+	if retained {
+		// Observe a natural exit so the slot is released even if no retry
+		// reclaims the runtime.
+		go p.watch(inst)
+	}
+	return err
+}
+
+// killRuntime signals rt and reports the kill error. On failure it logs a
+// bounded warning and the caller keeps the runtime in a retryable gated state
+// instead of releasing its slot or capacity. It never signals an already-done
+// runtime (Kill is idempotent).
+func (p *Proxy) killRuntime(ctx context.Context, inst *instance, rt runtime) error {
+	err := rt.Kill(ctx)
+	if err != nil {
+		p.log.Warn("runtime kill failed; retaining instance for retry",
+			"server_id", inst.serverID, "error", err)
+	}
 	return err
 }
 
@@ -990,13 +1014,36 @@ func (p *Proxy) shutdown(ctx context.Context) error {
 		p.dropLive(t.inst)
 	}
 	// Gated creations close ready once their fresh runtime is torn down; wait
-	// so Shutdown never returns while a spawned process is still alive.
+	// so Shutdown never returns while a spawned process is still alive. A
+	// rollback whose kill failed retains the runtime, so terminate it here too.
 	for _, inst := range pending {
 		select {
 		case <-inst.ready:
 		case <-ctx.Done():
 			errs = append(errs, ctx.Err())
+			continue
 		}
+		lk := inst.lock
+		lk.mu.Lock()
+		rt := inst.runtime
+		if p.lookupLive(inst.serverID) != inst || rt == nil {
+			rt = nil
+		} else {
+			inst.closed = true
+		}
+		lk.mu.Unlock()
+		if rt == nil {
+			continue
+		}
+		if err := p.killRuntime(ctx, inst, rt); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if err := waitRuntime(ctx, rt); err != nil {
+			errs = append(errs, err)
+		}
+		p.recordRetired(rt)
+		p.dropLive(inst)
 	}
 	return errors.Join(errs...)
 }

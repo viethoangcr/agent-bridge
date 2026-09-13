@@ -2341,3 +2341,138 @@ func TestShutdownLatchWinsOverSpawnRegistration(t *testing.T) {
 		t.Fatalf("factory calls = %d, want 0 after shutdown latched", got)
 	}
 }
+
+// TestAbandonCreateKillFailureRetainsRuntime proves a spawned runtime that lost
+// its publication race is not orphaned when its teardown kill fails: the
+// instance stays tracked with the runtime so a retrying DELETE can terminate
+// it, and capacity is released only once it is gone.
+func TestAbandonCreateKillFailureRetainsRuntime(t *testing.T) {
+	f := newTestFactory(t)
+	f.setOnCreate(liveOnCreate)
+	p, store := newProxyForTest(t, f)
+
+	finalizeGate := make(chan struct{})
+	releaseFinalize := make(chan struct{})
+	p.beforeAllowServerSubs = func() {
+		close(finalizeGate)
+		<-releaseFinalize
+	}
+	deleteMarked := make(chan struct{})
+	releaseDelete := make(chan struct{})
+	p.afterDeleteMark = func() {
+		close(deleteMarked)
+		<-releaseDelete
+	}
+
+	agent := "alpha"
+	postErr := make(chan error, 1)
+	go func() {
+		_, err := p.Post(t.Context(), "abandon-retain", &agent, "initialize", initPayload)
+		postErr <- err
+	}()
+	<-finalizeGate
+	rt := requireRuntime(t, f)
+	rt.setKillErr(errBoom)
+
+	deleteErr := make(chan error, 1)
+	go func() { deleteErr <- p.Delete(t.Context(), "abandon-retain") }()
+	awaitSignal(t, deleteMarked, "delete mark")
+	close(releaseFinalize)
+
+	if err := <-postErr; !errors.Is(err, ErrDeleting) {
+		t.Fatalf("Post = %v, want ErrDeleting", err)
+	}
+	inst := liveInstance(p, "abandon-retain")
+	if inst == nil {
+		t.Fatal("failed teardown orphaned the spawned runtime")
+	}
+	inst.lock.mu.Lock()
+	got := inst.runtime
+	inst.lock.mu.Unlock()
+	if got != rt {
+		t.Fatal("retained instance does not own the spawned runtime")
+	}
+	if liveCount(p) != 1 {
+		t.Fatalf("live = %d, want 1 (capacity stays consumed)", liveCount(p))
+	}
+
+	rt.setKillErr(nil)
+	close(releaseDelete)
+	if err := <-deleteErr; err != nil {
+		t.Fatalf("retry delete: %v", err)
+	}
+	if liveInstance(p, "abandon-retain") != nil {
+		t.Fatal("retained runtime survived the retry delete")
+	}
+	if _, err := store.Server(t.Context(), "abandon-retain"); !errors.Is(err, acpstore.ErrNotFound) {
+		t.Fatalf("server after retry delete = %v, want ErrNotFound", err)
+	}
+	if got := rt.kills(); got != 2 {
+		t.Fatalf("kills = %d, want 2", got)
+	}
+}
+
+// TestProxyShutdownRetriesRetainedSpawn proves Shutdown does not return while a
+// spawn whose rollback kill failed is still alive: it retries the kill, reports
+// the failure, and leaves the runtime tracked rather than orphaning it.
+func TestProxyShutdownRetriesRetainedSpawn(t *testing.T) {
+	f := newTestFactory(t)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var enteredOnce sync.Once
+	f.setOnCreate(func(_ context.Context, _ *acpstore.Store, _ string, _ acpruntime.LaunchSpec) error {
+		enteredOnce.Do(func() { close(entered) })
+		<-release
+		return nil
+	})
+	p, _ := newProxyForTest(t, f)
+
+	// Force every kill to fail so the spawn rollback retains the runtime and
+	// Shutdown must retry terminating it.
+	inner := p.factory
+	p.factory = func(ctx context.Context, store *acpstore.Store, serverID string, spec acpruntime.LaunchSpec, timeout time.Duration, log *slog.Logger) (runtime, error) {
+		rt, err := inner(ctx, store, serverID, spec, timeout, log)
+		if err == nil {
+			rt.(*fakeRuntime).setKillErr(errBoom)
+		}
+		return rt, err
+	}
+
+	agent := "alpha"
+	created := make(chan error, 1)
+	go func() {
+		_, err := p.Post(t.Context(), "shutdown-retain", &agent, "initialize", initPayload)
+		created <- err
+	}()
+	awaitSignal(t, entered, "creation start")
+
+	shutdownDone := make(chan error, 1)
+	go func() { shutdownDone <- p.Shutdown(t.Context()) }()
+	// Wait until Shutdown has latched closed and gated the in-flight creation,
+	// then release the spawn so its rollback loses the race deterministically.
+	waitFor(t, p.closed.Load)
+	waitFor(t, func() bool {
+		inst := liveInstance(p, "shutdown-retain")
+		if inst == nil {
+			return false
+		}
+		inst.lock.mu.Lock()
+		defer inst.lock.mu.Unlock()
+		return inst.terminating
+	})
+	close(release)
+
+	if err := <-created; err != nil && !errors.Is(err, ErrClosed) && !errors.Is(err, ErrDeleting) {
+		t.Fatalf("creation during shutdown = %v, want success, ErrClosed, or ErrDeleting", err)
+	}
+	if err := <-shutdownDone; !errors.Is(err, errBoom) {
+		t.Fatalf("Shutdown = %v, want errBoom from the retained kill", err)
+	}
+	rt := requireRuntime(t, f)
+	if got := rt.kills(); got < 2 {
+		t.Fatalf("kills = %d, want >= 2 (abandon plus shutdown retry)", got)
+	}
+	if liveInstance(p, "shutdown-retain") == nil {
+		t.Fatal("Shutdown orphaned the retained spawn")
+	}
+}
