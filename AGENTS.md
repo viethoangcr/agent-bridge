@@ -38,6 +38,21 @@ enforceable by review and by `internal/projectdocs`.
 - No third-party test frameworks; use `testing` and the standard library.
 - Tests must stay green under `-race` where the plan requires it.
 
+## Writing code and packages
+
+- Follow `docs/references/go-coding-standards.md`; a plan requirement wins over
+  it, and the conflict is flagged rather than silently resolved.
+- New package: update the specification or phase plan first, add the directory
+  under `internal/`, add its row to the ownership table and any edge to the
+  dependency graph in `docs/references/go-project-layout.md`, and add a package
+  comment (`doc.go` when the overview exceeds a short paragraph).
+- One package per directory; no `util`, `common`, `helpers`, `shared`, or
+  `pkg/`. Define interfaces on the consumer side and return concrete types.
+- Every exported symbol has a doc comment; acronyms are consistently cased.
+- Unit tests live next to their package, cross-package tests in
+  `internal/integration`, Docker tests in `tests/e2e`; write the failing
+  assertion first and run `make check` before committing.
+
 ## HTTP and errors
 
 - Every non-2xx response for a request that reaches routing or handlers uses

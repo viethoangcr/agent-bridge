@@ -1,6 +1,7 @@
 package projectdocs
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -188,8 +189,33 @@ func TestAgentsDocumentedRules(t *testing.T) {
 		"go run",
 		"docs/references/go-project-layout.md",
 		"docs/references/go-coding-standards.md",
+		"New package",
 	} {
 		contains(t, "AGENTS.md", agents, fragment)
+	}
+}
+
+// TestLayoutDocumentCoversEveryPackage keeps the layout reference honest: every
+// internal package directory must appear in docs/references/go-project-layout.md
+// so the package ownership table and dependency graph cannot silently drift.
+func TestLayoutDocumentCoversEveryPackage(t *testing.T) {
+	layout := readRepoFile(t, filepath.Join("docs", "references", "go-project-layout.md"))
+	entries, err := os.ReadDir(filepath.Join("..", "..", "internal"))
+	if err != nil {
+		t.Fatalf("read internal/: %v", err)
+	}
+	dirs := 0
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		dirs++
+		if !strings.Contains(layout, "internal/"+entry.Name()) {
+			t.Errorf("go-project-layout.md does not mention package directory internal/%s", entry.Name())
+		}
+	}
+	if dirs == 0 {
+		t.Fatal("internal/ has no package directories")
 	}
 }
 
