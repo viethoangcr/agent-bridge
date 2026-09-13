@@ -65,7 +65,7 @@ func NewServer(deps Dependencies) *Server {
 		newHeartbeatTicker: newHeartbeatTicker,
 		fsFileLimit:        maxFSFileBytes,
 		fsUploadLimit:      maxFSUploadBytes,
-		configJSONLimit:    maxConfigJSONBytes,
+		configJSONLimit:    maxJSONBodyBytes,
 	}
 	s.registerRoutes()
 	s.handler = requestLogger(deps.Log, authenticate(deps.Token, s.rejectUncleanPath(s.mux)))
@@ -118,23 +118,13 @@ func (s *Server) routeFallback(w http.ResponseWriter, r *http.Request) {
 
 // notFound emits an RFC 9457 404 for paths no route matches.
 func (s *Server) notFound(w http.ResponseWriter) {
-	WriteProblem(w, Problem{
-		Type:   "about:blank",
-		Title:  http.StatusText(http.StatusNotFound),
-		Status: http.StatusNotFound,
-		Detail: "not found",
-	})
+	writeProblem(w, http.StatusNotFound, detailNotFound)
 }
 
 // methodNotAllowed emits an RFC 9457 405 with a deterministic Allow header.
 func (s *Server) methodNotAllowed(w http.ResponseWriter, allow []string) {
 	w.Header().Set("Allow", strings.Join(allow, ", "))
-	WriteProblem(w, Problem{
-		Type:   "about:blank",
-		Title:  http.StatusText(http.StatusMethodNotAllowed),
-		Status: http.StatusMethodNotAllowed,
-		Detail: "method not allowed",
-	})
+	writeProblem(w, http.StatusMethodNotAllowed, "method not allowed")
 }
 
 // probeMethods is the deterministic candidate set used to derive Allow. GET

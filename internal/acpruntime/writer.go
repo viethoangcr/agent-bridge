@@ -221,18 +221,19 @@ func (r *Runtime) stopWriter() {
 	r.writerStopOnce.Do(func() { close(r.writerStop) })
 }
 
-// poison marks the stream unusable and tears down the process group. It closes
+// poison marks the stream unusable and tears down the direct child. It closes
 // the terminal gate before the kill, then stops the serializer and fails every
 // retained correlation before signaling, so fatal-write teardown follows the
-// same gate -> stop -> clear -> kill ordering as every other terminal path. It
-// is idempotent and safe to call from the writer goroutine.
+// same gate -> stop -> clear -> kill ordering as every other terminal path. The
+// sole waiter cleans the group. It is idempotent and safe to call from the
+// writer goroutine.
 func (r *Runtime) poison() {
 	r.poisonOnce.Do(func() {
 		r.closeTerminal()
 		r.poisoned.Store(true)
 		r.stopWriter()
 		r.failPending(ErrWrite)
-		_ = r.killProcessGroup()
+		_ = r.killChild()
 		r.closeStdin()
 	})
 }

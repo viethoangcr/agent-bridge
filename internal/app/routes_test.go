@@ -61,8 +61,6 @@ func waitForHealthAuth(t *testing.T, url, token string) {
 // route shares the one bearer-auth middleware, and that dispatch reaches the
 // intended non-nil dependency rather than the 503 "unavailable" fallback.
 func TestRunComposesAllPhaseRoutes(t *testing.T) {
-	restore := setShutdownGrace(t, 3*time.Second)
-	defer restore()
 
 	const token = "route-integration-token"
 	addr := freeAddress(t)
@@ -86,11 +84,11 @@ func TestRunComposesAllPhaseRoutes(t *testing.T) {
 	t.Cleanup(cancel)
 	runErr := make(chan error, 1)
 	go func() {
-		runErr <- Run(ctx, getenv, IO{
+		runErr <- run(ctx, getenv, IO{
 			Stdin:  strings.NewReader(""),
 			Stdout: io.Discard,
 			Stderr: &logs,
-		})
+		}, testOptions(3*time.Second))
 	}()
 	waitForHealthAuth(t, "http://"+addr+"/v1/health", token)
 

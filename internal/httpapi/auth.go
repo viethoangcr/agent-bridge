@@ -60,10 +60,5 @@ func bearerToken(r *http.Request) (string, bool) {
 
 // writeUnauthorized emits an RFC 9457 401 without reflecting any credential.
 func writeUnauthorized(w http.ResponseWriter) {
-	WriteProblem(w, Problem{
-		Type:   "about:blank",
-		Title:  http.StatusText(http.StatusUnauthorized),
-		Status: http.StatusUnauthorized,
-		Detail: "missing or invalid bearer token",
-	})
+	writeProblem(w, http.StatusUnauthorized, "missing or invalid bearer token")
 }

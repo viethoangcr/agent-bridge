@@ -202,21 +202,21 @@ func TestClassifyOutputSessionMutationSeam(t *testing.T) {
 			raw:         `{"jsonrpc":"2.0","id":1,"result":{"sessionId":"new-1"}}`,
 			lookup:      fakePending("1", pendingMeta{Lifecycle: LifecycleNew, CWD: stringPtr(cwdNew)}),
 			wantSession: stringPtr("new-1"),
-			wantMut:     &acpstore.SessionMutation{Lifecycle: "new", SessionID: "new-1", CWD: cwdNew},
+			wantMut:     &acpstore.SessionMutation{SessionID: "new-1", CWD: cwdNew},
 		},
 		{
 			name:        "successful session/load uses pending session id and cwd",
 			raw:         `{"jsonrpc":"2.0","id":2,"result":null}`,
 			lookup:      fakePending("2", pendingMeta{Lifecycle: LifecycleLoad, SessionID: stringPtr("s-load"), CWD: stringPtr("/w")}),
 			wantSession: stringPtr("s-load"),
-			wantMut:     &acpstore.SessionMutation{Lifecycle: "load", SessionID: "s-load", CWD: "/w"},
+			wantMut:     &acpstore.SessionMutation{SessionID: "s-load", CWD: "/w"},
 		},
 		{
 			name:        "successful session/resume uses pending session id and cwd",
 			raw:         `{"jsonrpc":"2.0","id":"r","result":{}}`,
 			lookup:      fakePending(`"r"`, pendingMeta{Lifecycle: LifecycleResume, SessionID: stringPtr("s-resume"), CWD: stringPtr("/r")}),
 			wantSession: stringPtr("s-resume"),
-			wantMut:     &acpstore.SessionMutation{Lifecycle: "resume", SessionID: "s-resume", CWD: "/r"},
+			wantMut:     &acpstore.SessionMutation{SessionID: "s-resume", CWD: "/r"},
 		},
 		{
 			name:    "error response never mutates",
@@ -280,7 +280,7 @@ func sameMutation(a, b *acpstore.SessionMutation) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil
 	}
-	return a.Lifecycle == b.Lifecycle && a.SessionID == b.SessionID && a.CWD == b.CWD
+	return a.SessionID == b.SessionID && a.CWD == b.CWD
 }
 
 func TestRuntimeOutputByteFidelity(t *testing.T) {

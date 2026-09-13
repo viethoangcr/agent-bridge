@@ -196,70 +196,109 @@ func idKey(id json.RawMessage) (string, error) {
 // canonicalNumber returns the canonical key of one raw JSON number token.
 func canonicalNumber(raw []byte) (string, error) {
 	i := 0
-	neg := false
-	if raw[i] == '-' {
-		neg = true
-		i++
-		if i == len(raw) {
-			return "", invalidEnvelope("numeric ID has no digits")
-		}
+	neg, i, err := parseNumberSign(raw, i)
+	if err != nil {
+		return "", err
 	}
-
-	intStart := i
-	for i < len(raw) && isDigit(raw[i]) {
-		i++
+	intStart, i, err := parseIntegerDigits(raw, i)
+	if err != nil {
+		return "", err
 	}
-	intEnd := i
-	if intEnd == intStart {
-		return "", invalidEnvelope("numeric ID has no integer digits")
+	fracStart, fracEnd, i, err := parseFraction(raw, i)
+	if err != nil {
+		return "", err
 	}
-	if intEnd-intStart > 1 && raw[intStart] == '0' {
-		return "", invalidEnvelope("numeric ID has a leading zero")
-	}
-
-	fracStart, fracEnd := i, i
-	if i < len(raw) && raw[i] == '.' {
-		i++
-		fracStart = i
-		for i < len(raw) && isDigit(raw[i]) {
-			i++
-		}
-		fracEnd = i
-		if fracEnd == fracStart {
-			return "", invalidEnvelope("numeric ID has an empty fraction")
-		}
-	}
-
-	exp := 0
-	if i < len(raw) && (raw[i] == 'e' || raw[i] == 'E') {
-		i++
-		expNeg := false
-		if i < len(raw) && (raw[i] == '+' || raw[i] == '-') {
-			expNeg = raw[i] == '-'
-			i++
-		}
-		expStart := i
-		for i < len(raw) && isDigit(raw[i]) {
-			exp = exp*10 + int(raw[i]-'0')
-			if exp > maxIDExponent {
-				return "", invalidEnvelope("numeric ID exponent exceeds 1000000")
-			}
-			i++
-		}
-		if i == expStart {
-			return "", invalidEnvelope("numeric ID has an empty exponent")
-		}
-		if expNeg {
-			exp = -exp
-		}
+	exp, i, err := parseExponent(raw, i)
+	if err != nil {
+		return "", err
 	}
 	if i != len(raw) {
 		return "", invalidEnvelope("numeric ID has trailing characters")
 	}
+	return canonicalNumberKey(raw, neg, intStart, fracStart, fracEnd, exp), nil
+}
 
-	// Significant digits span the integer and fraction digits with the decimal
-	// point removed. Leading zeros are insignificant; trailing zeros fold into
-	// the scale.
+// parseNumberSign consumes an optional leading minus and rejects a sign with no
+// following digits.
+func parseNumberSign(raw []byte, i int) (neg bool, next int, err error) {
+	if i < len(raw) && raw[i] == '-' {
+		i++
+		if i == len(raw) {
+			return false, 0, invalidEnvelope("numeric ID has no digits")
+		}
+		return true, i, nil
+	}
+	return false, i, nil
+}
+
+// parseIntegerDigits consumes the mandatory integer part and rejects a leading
+// zero in a multi-digit run.
+func parseIntegerDigits(raw []byte, i int) (start, next int, err error) {
+	start = i
+	for i < len(raw) && isDigit(raw[i]) {
+		i++
+	}
+	if i == start {
+		return 0, 0, invalidEnvelope("numeric ID has no integer digits")
+	}
+	if i-start > 1 && raw[start] == '0' {
+		return 0, 0, invalidEnvelope("numeric ID has a leading zero")
+	}
+	return start, i, nil
+}
+
+// parseFraction consumes an optional fractional part and rejects an empty
+// fraction. When absent, start and end both equal the current index.
+func parseFraction(raw []byte, i int) (start, end, next int, err error) {
+	start, end = i, i
+	if i < len(raw) && raw[i] == '.' {
+		i++
+		start = i
+		for i < len(raw) && isDigit(raw[i]) {
+			i++
+		}
+		end = i
+		if end == start {
+			return 0, 0, 0, invalidEnvelope("numeric ID has an empty fraction")
+		}
+	}
+	return start, end, i, nil
+}
+
+// parseExponent consumes an optional exponent and rejects an empty or
+// over-limit one. The magnitude cap keeps the canonicalizer O(token length).
+func parseExponent(raw []byte, i int) (exp, next int, err error) {
+	if i >= len(raw) || (raw[i] != 'e' && raw[i] != 'E') {
+		return 0, i, nil
+	}
+	i++
+	expNeg := false
+	if i < len(raw) && (raw[i] == '+' || raw[i] == '-') {
+		expNeg = raw[i] == '-'
+		i++
+	}
+	expStart := i
+	for i < len(raw) && isDigit(raw[i]) {
+		exp = exp*10 + int(raw[i]-'0')
+		if exp > maxIDExponent {
+			return 0, 0, invalidEnvelope("numeric ID exponent exceeds 1000000")
+		}
+		i++
+	}
+	if i == expStart {
+		return 0, 0, invalidEnvelope("numeric ID has an empty exponent")
+	}
+	if expNeg {
+		exp = -exp
+	}
+	return exp, i, nil
+}
+
+// canonicalNumberKey folds the parsed number's significant digits and scale
+// into the canonical key. Significant digits span the integer and fraction
+// digits with the decimal point removed. Leading zeros are insignificant;
+// trailing zeros fold into the scale.
+func canonicalNumberKey(raw []byte, neg bool, intStart, fracStart, fracEnd, exp int) string {
 	digitsStart, digitsEnd := intStart, fracEnd
 	first := -1
 	for k := digitsStart; k < digitsEnd; k++ {
@@ -269,7 +308,7 @@ func canonicalNumber(raw []byte) (string, error) {
 		}
 	}
 	if first < 0 {
-		return "n:0", nil
+		return "n:0"
 	}
 	last := first
 	trailingZeros := 0
@@ -297,7 +336,7 @@ func canonicalNumber(raw []byte) (string, error) {
 	}
 	buf = append(buf, 'e')
 	buf = strconv.AppendInt(buf, int64(scale), 10)
-	return string(buf), nil
+	return string(buf)
 }
 
 func isDigit(b byte) bool { return b >= '0' && b <= '9' }

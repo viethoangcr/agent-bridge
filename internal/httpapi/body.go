@@ -7,6 +7,20 @@ import (
 	"net/http"
 )
 
+// maxJSONBodyBytes is the master 10MiB JSON body ceiling shared by every JSON
+// endpoint.
+const maxJSONBodyBytes int64 = 10 << 20
+
+// decodeJSONRequest enforces the application/json Content-Type contract and
+// then decodes exactly one bounded JSON object into dst, writing the same
+// problem responses as DecodeJSON.
+func decodeJSONRequest(w http.ResponseWriter, r *http.Request, limit int64, dst any) bool {
+	if !requireJSONContentType(w, r) {
+		return false
+	}
+	return DecodeJSON(w, r, limit, dst)
+}
+
 // DecodeJSON decodes exactly one JSON object from r into dst while bounding the
 // body to limit bytes. It rejects malformed or empty bodies and any trailing
 // JSON value, writing an RFC 9457 problem response and returning false on
@@ -32,18 +46,8 @@ func DecodeJSON(w http.ResponseWriter, r *http.Request, limit int64, dst any) bo
 func writeDecodeProblem(w http.ResponseWriter, err error) {
 	var maxErr *http.MaxBytesError
 	if errors.As(err, &maxErr) {
-		WriteProblem(w, Problem{
-			Type:   "about:blank",
-			Title:  http.StatusText(http.StatusRequestEntityTooLarge),
-			Status: http.StatusRequestEntityTooLarge,
-			Detail: "request body too large",
-		})
+		writeProblem(w, http.StatusRequestEntityTooLarge, detailBodyTooLarge)
 		return
 	}
-	WriteProblem(w, Problem{
-		Type:   "about:blank",
-		Title:  http.StatusText(http.StatusBadRequest),
-		Status: http.StatusBadRequest,
-		Detail: "invalid JSON body",
-	})
+	writeProblem(w, http.StatusBadRequest, "invalid JSON body")
 }

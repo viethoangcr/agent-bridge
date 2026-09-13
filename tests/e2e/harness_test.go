@@ -6,11 +6,8 @@
 package e2e
 
 import (
-	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -69,6 +66,9 @@ func uniqueSuffix() string {
 func uniqueToken(prefix string) string {
 	return prefix + "-" + uniqueSuffix()
 }
+
+// keep reports whether the operator asked to retain Docker state.
+func keep() bool { return os.Getenv("AGENT_BRIDGE_E2E_KEEP") == "1" }
 
 // buildImage builds the runtime image exactly once per test process with a
 // unique tag. The image is removed at process exit unless
@@ -131,52 +131,78 @@ type container struct {
 	lastSSE    int64
 }
 
-// startContainer launches the image detached with a mandatory unique token, a
-// unique named volume mounted at the image workdir, and an unset
-// AGENT_BRIDGE_HOST so the image default 0.0.0.0 applies. Cleanup is registered
-// immediately after creation.
-func startContainer(t *testing.T, image, token string, env map[string]string, volume string) *container {
+// containerOptions configures the single private container-launch seam.
+type containerOptions struct {
+	namePrefix      string
+	token           string
+	env             map[string]string
+	volume          string
+	newVolume       bool
+	entrypoint      []string
+	allowEmptyToken bool
+}
+
+// startContainerOptions launches the image detached with a unique name and a
+// Docker-assigned localhost port. The token may be empty only when the caller
+// sets allowEmptyToken. newVolume creates and owns a unique named volume at the
+// image workdir unless an existing volume is supplied, and entrypoint overrides
+// the image entrypoint for startup hooks. Cleanup is registered immediately
+// after creation.
+func startContainerOptions(t *testing.T, image string, opts containerOptions) *container {
 	t.Helper()
-	if token == "" {
-		t.Fatal("startContainer requires a non-empty AGENT_BRIDGE_TOKEN")
+	if opts.token == "" && !opts.allowEmptyToken {
+		t.Fatal("startContainerOptions requires a non-empty AGENT_BRIDGE_TOKEN")
 	}
-	if _, ok := env["AGENT_BRIDGE_TOKEN"]; ok {
-		t.Fatal("startContainer env must not override AGENT_BRIDGE_TOKEN")
+	if _, ok := opts.env["AGENT_BRIDGE_TOKEN"]; ok {
+		t.Fatal("startContainerOptions env must not override AGENT_BRIDGE_TOKEN")
 	}
-	if _, ok := env["AGENT_BRIDGE_HOST"]; ok {
-		t.Fatal("startContainer must leave AGENT_BRIDGE_HOST unset so the image default 0.0.0.0 applies")
+	if _, ok := opts.env["AGENT_BRIDGE_HOST"]; ok {
+		t.Fatal("startContainerOptions must leave AGENT_BRIDGE_HOST unset so the image default 0.0.0.0 applies")
 	}
 
+	prefix := opts.namePrefix
+	if prefix == "" {
+		prefix = "agent-bridge-e2e-"
+	}
 	c := &container{
 		t:              t,
-		name:           "agent-bridge-e2e-" + uniqueSuffix(),
+		name:           prefix + uniqueSuffix(),
 		image:          image,
-		token:          token,
+		token:          opts.token,
 		requestTimeout: requestTimeout,
 	}
-	if volume == "" {
-		volume = c.name + "-vol"
+
+	args := []string{"run", "-d", "--name", c.name, "-p", "127.0.0.1::" + containerPort}
+	if opts.token != "" {
+		args = append(args, "-e", "AGENT_BRIDGE_TOKEN="+opts.token)
+	}
+	switch {
+	case opts.newVolume:
+		volume := c.name + "-vol"
 		dockerOrFail(t, "volume", "create", volume)
 		c.ownsVolume = true
+		c.volume = volume
 		vol := volume
 		t.Cleanup(func() {
-			if os.Getenv("AGENT_BRIDGE_E2E_KEEP") != "1" {
+			if !keep() {
 				_, _ = docker("volume", "rm", "-f", vol)
 			}
 		})
+		args = append(args, "-v", volume+":/workspace")
+	case opts.volume != "":
+		c.volume = opts.volume
+		args = append(args, "-v", opts.volume+":/workspace")
 	}
-	c.volume = volume
-
-	args := []string{
-		"run", "-d", "--name", c.name,
-		"-p", "127.0.0.1::" + containerPort,
-		"-e", "AGENT_BRIDGE_TOKEN=" + token,
-		"-v", volume + ":/workspace",
-	}
-	for key, value := range env {
+	for key, value := range opts.env {
 		args = append(args, "-e", key+"="+value)
 	}
+	if len(opts.entrypoint) > 0 {
+		args = append(args, "--entrypoint", opts.entrypoint[0])
+	}
 	args = append(args, image)
+	if len(opts.entrypoint) > 1 {
+		args = append(args, opts.entrypoint[1:]...)
+	}
 	if out, err := docker(args...); err != nil {
 		t.Fatalf("docker run: %v\n%s", err, out)
 	}
@@ -189,6 +215,47 @@ func startContainer(t *testing.T, image, token string, env map[string]string, vo
 	c.port = port
 	c.base = "http://127.0.0.1:" + port
 	return c
+}
+
+// startContainer launches the image with a mandatory unique token and, when no
+// volume is supplied, a harness-owned unique named volume.
+func startContainer(t *testing.T, image, token string, env map[string]string, volume string) *container {
+	t.Helper()
+	return startContainerOptions(t, image, containerOptions{
+		token:     token,
+		env:       env,
+		volume:    volume,
+		newVolume: volume == "",
+	})
+}
+
+// restartContainer starts one bridge container on an existing named volume so
+// two generations can share durable state. A non-nil entrypoint overrides the
+// image entrypoint, which the sentinel negative check uses to occupy a PID
+// before the bridge starts.
+func restartContainer(t *testing.T, image, token, volume string, env map[string]string, entrypoint []string) *container {
+	t.Helper()
+	return startContainerOptions(t, image, containerOptions{
+		namePrefix: "agent-bridge-e2e-state-",
+		token:      token,
+		env:        env,
+		volume:     volume,
+		entrypoint: entrypoint,
+	})
+}
+
+// startContainerAllowEmpty launches a detached bridge container that may omit
+// AGENT_BRIDGE_TOKEN and mounts no volume. It exists only for the explicit
+// insecure-remote startup test; every other hardening container uses the
+// token-requiring harness.
+func startContainerAllowEmpty(t *testing.T, image, token string, env map[string]string) *container {
+	t.Helper()
+	return startContainerOptions(t, image, containerOptions{
+		namePrefix:      "agent-bridge-e2e-harden-",
+		token:           token,
+		env:             env,
+		allowEmptyToken: true,
+	})
 }
 
 // discoverPort reads the Docker-assigned host port for the container's 2468
@@ -224,7 +291,7 @@ func (c *container) cleanup() {
 	c.inspect = string(inspect)
 	c.mu.Unlock()
 
-	if os.Getenv("AGENT_BRIDGE_E2E_KEEP") == "1" {
+	if keep() {
 		return
 	}
 	_, _ = docker("rm", "-f", c.name)
@@ -249,9 +316,11 @@ func (c *container) diagnostics() string {
 		c.name, status, body, lastSSE, inspect, logs)
 }
 
-// do performs one authenticated request and returns the response and body
-// without failing on a non-2xx status.
-func (c *container) do(method, path string, body []byte) (*http.Response, []byte, error) {
+// doRequest is the single request primitive. It attaches the bearer token when
+// auth is set, applies controlled headers, and defaults a JSON Content-Type for
+// a request body unless the caller set one. The status and body are recorded
+// for failure diagnostics.
+func (c *container) doRequest(method, path string, headers map[string]string, auth bool, body []byte) (*http.Response, []byte, error) {
 	var reader io.Reader
 	if body != nil {
 		reader = bytes.NewReader(body)
@@ -262,26 +331,34 @@ func (c *container) do(method, path string, body []byte) (*http.Response, []byte
 	if err != nil {
 		return nil, nil, err
 	}
-	if strings.HasPrefix(path, "/v1/") {
+	if auth {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
-	if body != nil {
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+	if body != nil && req.Header.Get("Content-Type") == "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	resp, err := (&http.Client{}).Do(req)
 	if err != nil {
 		return nil, nil, err
 	}
 	data, readErr := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
-	if readErr != nil {
-		return resp, data, readErr
-	}
 	c.mu.Lock()
 	c.lastStatus, c.lastBody = resp.StatusCode, data
 	c.mu.Unlock()
+	if readErr != nil {
+		return resp, data, readErr
+	}
 	return resp, data, nil
+}
+
+// do performs one authenticated request and returns the response and body
+// without failing on a non-2xx status.
+func (c *container) do(method, path string, body []byte) (*http.Response, []byte, error) {
+	return c.doRequest(method, path, nil, strings.HasPrefix(path, "/v1/"), body)
 }
 
 // request performs one authenticated request and fails the test on a transport
@@ -308,23 +385,17 @@ func (c *container) getNoAuth(path string) (*http.Response, []byte) {
 
 // doNoAuth performs one unauthenticated request.
 func (c *container) doNoAuth(method, path string, body []byte) (*http.Response, []byte, error) {
-	var reader io.Reader
-	if body != nil {
-		reader = bytes.NewReader(body)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), c.requestTimeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, method, c.base+path, reader)
+	return c.doRequest(method, path, nil, false, body)
+}
+
+// rawRequest performs one authenticated request with fully controlled headers.
+func rawRequest(t *testing.T, c *container, method, path string, headers map[string]string, body []byte) (*http.Response, []byte) {
+	t.Helper()
+	resp, data, err := c.doRequest(method, path, headers, true, body)
 	if err != nil {
-		return nil, nil, err
+		t.Fatalf("%s %s: %v\n%s", method, path, err, c.diagnostics())
 	}
-	resp, err := (&http.Client{}).Do(req)
-	if err != nil {
-		return nil, nil, err
-	}
-	data, readErr := io.ReadAll(resp.Body)
-	_ = resp.Body.Close()
-	return resp, data, readErr
+	return resp, data
 }
 
 // waitHealthy polls the authenticated health endpoint until it returns 200 or
@@ -375,308 +446,44 @@ func (c *container) noteSSE(seq int64) {
 	c.mu.Unlock()
 }
 
-// rpcBody marshal one JSON-RPC 2.0 request, preserving the Go type of id.
-func rpc(id any, method string, params any) []byte {
-	body, err := json.Marshal(map[string]any{
-		"jsonrpc": "2.0",
-		"id":      id,
-		"method":  method,
-		"params":  params,
-	})
+// copyWorkspace copies the container's /workspace volume into a host temp dir.
+func copyWorkspace(t *testing.T, c *container) string {
+	t.Helper()
+	dir := t.TempDir()
+	if out, err := docker("cp", c.name+":/workspace/.", dir); err != nil {
+		t.Fatalf("docker cp workspace: %v\n%s", err, out)
+	}
+	return dir
+}
+
+// readProcStat returns the raw /proc/<pid>/stat line inside the container and
+// whether the process still exists.
+func readProcStat(name string, pid int) (string, bool) {
+	out, err := docker("exec", name, "cat", "/proc/"+strconv.Itoa(pid)+"/stat")
 	if err != nil {
-		panic("marshal rpc: " + err.Error())
+		return "", false
 	}
-	return body
+	return string(out), true
 }
 
-// rpcError is one JSON-RPC error object.
-type rpcError struct {
-	Code    int             `json:"code"`
-	Message string          `json:"message"`
-	Data    json.RawMessage `json:"data,omitempty"`
+// parseProcState extracts the state byte from a /proc/<pid>/stat line. The
+// command name may contain spaces or parentheses, so the state is the first
+// field after the final ')'.
+func parseProcState(data string) (byte, bool) {
+	end := strings.LastIndex(data, ")")
+	if end < 0 || end+2 >= len(data) {
+		return 0, false
+	}
+	return data[end+2], true
 }
 
-// rpcEnvelope is the decoded JSON-RPC envelope used by client and agent
-// messages.
-type rpcEnvelope struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      json.RawMessage `json:"id,omitempty"`
-	Method  string          `json:"method,omitempty"`
-	Params  json.RawMessage `json:"params,omitempty"`
-	Result  json.RawMessage `json:"result,omitempty"`
-	Error   *rpcError       `json:"error,omitempty"`
-}
-
-// decodeEnvelope decodes one JSON-RPC envelope, failing the test on bad JSON.
-func decodeEnvelope(t *testing.T, data []byte) rpcEnvelope {
+// processState returns the /proc state of pid inside the container and whether
+// the process still exists. A missing process reports ok=false.
+func processState(t *testing.T, name string, pid int) (byte, bool) {
 	t.Helper()
-	var env rpcEnvelope
-	if err := json.Unmarshal(data, &env); err != nil {
-		t.Fatalf("decode envelope %q: %v", data, err)
+	stat, ok := readProcStat(name, pid)
+	if !ok {
+		return 0, false
 	}
-	return env
-}
-
-// acpPath builds the ACP POST path with an optional agent query.
-func acpPath(serverID, agent string) string {
-	path := "/v1/acp/" + serverID
-	if agent != "" {
-		path += "?agent=" + agent
-	}
-	return path
-}
-
-// postACP posts one ACP envelope and returns the raw status and body.
-func postACP(t *testing.T, c *container, serverID, agent string, body []byte) (int, []byte) {
-	t.Helper()
-	resp, data := c.request(http.MethodPost, acpPath(serverID, agent), body)
-	return resp.StatusCode, data
-}
-
-// initialize performs the ACP initialize handshake and returns the response
-// envelope.
-func initialize(t *testing.T, c *container, serverID, agent string) rpcEnvelope {
-	t.Helper()
-	body := rpc("initialize", "initialize", map[string]any{
-		"protocolVersion":    1,
-		"clientCapabilities": map[string]any{},
-	})
-	code, data := postACP(t, c, serverID, agent, body)
-	if code != http.StatusOK {
-		t.Fatalf("initialize %s = %d: %s\n%s", serverID, code, data, c.diagnostics())
-	}
-	return decodeEnvelope(t, data)
-}
-
-// eventView mirrors the persisted event DTO returned by the events endpoint.
-type eventView struct {
-	Seq         int64           `json:"seq"`
-	Kind        string          `json:"kind"`
-	Method      *string         `json:"method"`
-	Payload     json.RawMessage `json:"payload"`
-	SessionID   *string         `json:"sessionId"`
-	CreatedAtMs int64           `json:"createdAtMs"`
-}
-
-// statusView mirrors the status endpoint DTO.
-type statusView struct {
-	ServerID     string   `json:"serverId"`
-	Agent        string   `json:"agent"`
-	Status       string   `json:"status"`
-	CreatedAtMs  int64    `json:"createdAtMs"`
-	LastEventSeq int64    `json:"lastEventSeq"`
-	SessionIDs   []string `json:"sessionIds"`
-	PID          *int     `json:"pid"`
-	UpdatedAtMs  int64    `json:"updatedAtMs"`
-}
-
-// serverListView mirrors the server-list endpoint DTO.
-type serverListView struct {
-	Servers []struct {
-		ServerID    string `json:"serverId"`
-		Agent       string `json:"agent"`
-		Status      string `json:"status"`
-		CreatedAtMs int64  `json:"createdAtMs"`
-		UpdatedAtMs int64  `json:"updatedAtMs"`
-	} `json:"servers"`
-}
-
-// getJSON performs an authenticated GET and decodes a 200 body into out.
-func getJSON(t *testing.T, c *container, path string, out any) (int, []byte) {
-	t.Helper()
-	resp, data := c.request(http.MethodGet, path, nil)
-	if out != nil && resp.StatusCode == http.StatusOK {
-		if err := json.Unmarshal(data, out); err != nil {
-			t.Fatalf("decode %s: %v (%s)\n%s", path, err, data, c.diagnostics())
-		}
-	}
-	return resp.StatusCode, data
-}
-
-// status fetches one server's status view.
-func status(t *testing.T, c *container, serverID string) (statusView, int) {
-	t.Helper()
-	var view statusView
-	code, _ := getJSON(t, c, "/v1/acp/"+serverID+"/status", &view)
-	return view, code
-}
-
-// events fetches one server's events with an optional query string.
-func events(t *testing.T, c *container, serverID, query string) ([]eventView, int) {
-	t.Helper()
-	var out struct {
-		Events []eventView `json:"events"`
-	}
-	path := "/v1/acp/" + serverID + "/events"
-	if query != "" {
-		path += "?" + query
-	}
-	code, _ := getJSON(t, c, path, &out)
-	return out.Events, code
-}
-
-// waitFor polls cond every 25ms until it is true or the deadline passes.
-func waitFor(t *testing.T, c *container, timeout time.Duration, desc string, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for %s\n%s", desc, c.diagnostics())
-}
-
-// waitEventMethod polls durable events for the first event carrying method.
-func waitEventMethod(t *testing.T, c *container, serverID, method string, timeout time.Duration) eventView {
-	t.Helper()
-	var found eventView
-	waitFor(t, c, timeout, "event "+method, func() bool {
-		list, code := events(t, c, serverID, "limit=1000")
-		if code != http.StatusOK {
-			return false
-		}
-		for _, event := range list {
-			if event.Method != nil && *event.Method == method {
-				found = event
-				return true
-			}
-		}
-		return false
-	})
-	return found
-}
-
-// sseEvent is one decoded Server-Sent Events frame.
-type sseEvent struct {
-	Event   string
-	ID      int64
-	Data    []byte
-	Comment bool
-	Text    string
-}
-
-// sseStream decodes one SSE response with support for comments, event, id, and
-// multi-line data fields.
-type sseStream struct {
-	resp    *http.Response
-	scanner *bufio.Scanner
-
-	cur      sseEvent
-	hasField bool
-}
-
-// subscribe opens an authenticated SSE stream, optionally resuming after
-// lastEventID.
-func (c *container) subscribe(ctx context.Context, serverID, lastEventID string) (*sseStream, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/v1/acp/"+serverID, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
-	req.Header.Set("Accept", "text/event-stream")
-	if lastEventID != "" {
-		req.Header.Set("Last-Event-ID", lastEventID)
-	}
-	// A dedicated client without a Timeout so long-lived streams are bounded
-	// only by the request context.
-	resp, err := (&http.Client{}).Do(req)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		data, _ := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		return nil, fmt.Errorf("sse %s status %d: %s", serverID, resp.StatusCode, data)
-	}
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
-	return &sseStream{resp: resp, scanner: scanner}, nil
-}
-
-// close releases the underlying connection.
-func (s *sseStream) close() { _ = s.resp.Body.Close() }
-
-// next returns the next frame. Comments are returned immediately with
-// Comment=true. It returns io.EOF when the stream ends normally.
-func (s *sseStream) next() (sseEvent, error) {
-	for s.scanner.Scan() {
-		line := s.scanner.Text()
-		switch {
-		case line == "":
-			if s.hasField {
-				event := s.cur
-				s.cur = sseEvent{}
-				s.hasField = false
-				return event, nil
-			}
-		case strings.HasPrefix(line, ":"):
-			return sseEvent{Comment: true, Text: strings.TrimSpace(line[1:])}, nil
-		case strings.HasPrefix(line, "event:"):
-			s.cur.Event = strings.TrimSpace(line[len("event:"):])
-			s.hasField = true
-		case strings.HasPrefix(line, "id:"):
-			if n, err := strconv.ParseInt(strings.TrimSpace(line[len("id:"):]), 10, 64); err == nil {
-				s.cur.ID = n
-			}
-			s.hasField = true
-		case strings.HasPrefix(line, "data:"):
-			value := strings.TrimPrefix(line[len("data:"):], " ")
-			if s.cur.Data != nil {
-				s.cur.Data = append(s.cur.Data, '\n')
-			}
-			s.cur.Data = append(s.cur.Data, value...)
-			s.hasField = true
-		default:
-			// Unknown SSE field: ignore its content but keep the frame open.
-			s.hasField = true
-		}
-	}
-	if err := s.scanner.Err(); err != nil {
-		return sseEvent{}, err
-	}
-	return sseEvent{}, io.EOF
-}
-
-// nextMessage returns the next non-comment message frame, recording its
-// sequence for diagnostics.
-func (s *sseStream) nextMessage(c *container) (sseEvent, error) {
-	for {
-		event, err := s.next()
-		if err != nil {
-			return sseEvent{}, err
-		}
-		if event.Comment {
-			continue
-		}
-		c.noteSSE(event.ID)
-		return event, nil
-	}
-}
-
-// waitComment waits for one comment (heartbeat) frame or the deadline.
-func (s *sseStream) waitComment(timeout time.Duration) (sseEvent, error) {
-	deadline := time.Now().Add(timeout)
-	for {
-		if time.Now().After(deadline) {
-			return sseEvent{}, errors.New("no SSE comment within deadline")
-		}
-		event, err := s.next()
-		if err != nil {
-			return sseEvent{}, err
-		}
-		if event.Comment {
-			return event, nil
-		}
-	}
-}
-
-// problem is the RFC 9457 problem document plus the agentStderr extension.
-type problem struct {
-	Type        string `json:"type"`
-	Title       string `json:"title"`
-	Status      int    `json:"status"`
-	Detail      string `json:"detail"`
-	AgentStderr string `json:"agentStderr"`
+	return parseProcState(stat)
 }

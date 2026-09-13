@@ -8,10 +8,14 @@ import (
 	"os"
 )
 
+// MaxFileBytes is the owner constant for the 512MiB file limit shared by raw
+// file PUT and by tar.gz uploads.
+const MaxFileBytes int64 = 512 << 20
+
 // MaxUploadCompressedBytes and MaxUploadExtractedBytes bound tar.gz uploads.
 const (
-	MaxUploadCompressedBytes int64 = 512 << 20
-	MaxUploadExtractedBytes  int64 = 512 << 20
+	MaxUploadCompressedBytes int64 = MaxFileBytes
+	MaxUploadExtractedBytes  int64 = MaxFileBytes
 )
 
 // stagingPrefix names every temporary extraction tree so a rejected upload is

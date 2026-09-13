@@ -7,6 +7,12 @@ import (
 	"net/http"
 )
 
+// Canonical problem details reused across handlers.
+const (
+	detailNotFound     = "not found"
+	detailBodyTooLarge = "request body too large"
+)
+
 // Problem is an RFC 9457 problem detail. Ext holds top-level extension
 // members; reserved members (type, title, status, detail) always win.
 type Problem struct {
@@ -46,6 +52,30 @@ func problemMap(p Problem) map[string]any {
 // MarshalJSON renders p as a flat JSON object, merging Ext into the top level.
 func (p Problem) MarshalJSON() ([]byte, error) {
 	return json.Marshal(problemMap(p))
+}
+
+// newProblem builds a minimal RFC 9457 problem with the canonical about:blank
+// type and the status text as title.
+func newProblem(status int, detail string) Problem {
+	return Problem{
+		Type:   "about:blank",
+		Title:  http.StatusText(status),
+		Status: status,
+		Detail: detail,
+	}
+}
+
+// writeProblem emits a status/detail problem response.
+func writeProblem(w http.ResponseWriter, status int, detail string) {
+	WriteProblem(w, newProblem(status, detail))
+}
+
+// writeProblemExt emits a status/detail problem response carrying extension
+// members. Reserved RFC 9457 members always win over conflicting ext keys.
+func writeProblemExt(w http.ResponseWriter, status int, detail string, ext map[string]any) {
+	problem := newProblem(status, detail)
+	problem.Ext = ext
+	WriteProblem(w, problem)
 }
 
 // WriteProblem writes p as an application/problem+json response using p.Status

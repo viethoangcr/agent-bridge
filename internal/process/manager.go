@@ -4,14 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 )
 
@@ -91,6 +88,12 @@ type Manager struct {
 	runGroupsMu sync.Mutex
 	runGroups   map[int]*signalGate
 
+	// observeExit and afterReap are private test seams for the unreaped-exit
+	// observation. Production leaves both nil, so observedExit delegates to
+	// procgroup.ObserveExit and afterReap is never called.
+	observeExit func(pid int) bool
+	afterReap   func(*managedProcess)
+
 	shutdownOnce sync.Once
 	shutdownDone chan struct{}
 
@@ -143,150 +146,6 @@ func newManagerWithBudgets(baseEnv []string, cwd string, budgets managerBudgets)
 // reused, even after the record is deleted.
 func (m *Manager) newID() string {
 	return "proc_" + strconv.FormatInt(m.nextID.Add(1), 10)
-}
-
-// Start validates req, reserves concurrency capacity, spawns the command in its
-// own process group, and returns a running snapshot. On spawn failure it
-// releases the reservation without creating a record.
-func (m *Manager) Start(req StartRequest) (Snapshot, error) {
-	command := strings.TrimSpace(req.Command)
-	if command == "" {
-		return Snapshot{}, fmt.Errorf("%w: command is required", ErrValidation)
-	}
-	effectiveCwd := m.cwd
-	if req.Cwd != "" {
-		effectiveCwd = req.Cwd
-	}
-
-	cmd := exec.Command(command, req.Args...)
-	cmd.Dir = effectiveCwd
-	cmd.Env = mergeEnv(m.baseEnv, req.Env)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return Snapshot{}, fmt.Errorf("%w: stdin pipe: %v", ErrStart, err)
-	}
-	// Explicit pipes, not cmd.StdoutPipe/cmd.StderrPipe: cmd.Wait closes exec's
-	// own parent pipes once the direct child is reaped, which would discard any
-	// buffered output the pumps have not read yet. The pumps own these read
-	// ends and close them after EOF.
-	stdoutR, stdoutW, err := os.Pipe()
-	if err != nil {
-		closePipe(stdin)
-		return Snapshot{}, fmt.Errorf("%w: stdout pipe: %v", ErrStart, err)
-	}
-	stderrR, stderrW, err := os.Pipe()
-	if err != nil {
-		closePipe(stdin)
-		closePipe(stdoutR)
-		closePipe(stdoutW)
-		return Snapshot{}, fmt.Errorf("%w: stderr pipe: %v", ErrStart, err)
-	}
-	cmd.Stdout = stdoutW
-	cmd.Stderr = stderrW
-
-	if err := m.reserveProcess(); err != nil {
-		closePipe(stdin)
-		closePipe(stdoutR)
-		closePipe(stdoutW)
-		closePipe(stderrR)
-		closePipe(stderrW)
-		return Snapshot{}, err
-	}
-	if err := cmd.Start(); err != nil {
-		closePipe(stdin)
-		closePipe(stdoutR)
-		closePipe(stdoutW)
-		closePipe(stderrR)
-		closePipe(stderrW)
-		m.releaseProcess()
-		return Snapshot{}, fmt.Errorf("%w: %v", ErrStart, err)
-	}
-	// The parent must drop its write ends so the pumps observe EOF once the
-	// direct child and every descendant have closed theirs.
-	closePipe(stdoutW)
-	closePipe(stderrW)
-
-	pid := cmd.Process.Pid
-	p := &managedProcess{
-		id:             m.newID(),
-		command:        command,
-		args:           append([]string(nil), req.Args...),
-		cwd:            effectiveCwd,
-		status:         StatusRunning,
-		pid:            pid,
-		signals:        signalGate{pid: pid},
-		createdAtMs:    time.Now().UnixMilli(),
-		manager:        m,
-		cmd:            cmd,
-		stdin:          stdin,
-		inputAdmission: make(chan struct{}, 1),
-		ring:           newLogRing(m.config.load().MaxLogBytesPerProcess),
-		done:           make(chan struct{}),
-	}
-
-	m.mu.Lock()
-	m.processes[p.id] = p
-	snapshot := p.snapshot()
-	m.mu.Unlock()
-
-	// A concurrent Shutdown marks the manager closing after this start passed
-	// its reservation check but before the group was registered. Self-kill the
-	// freshly spawned group so it cannot outlive the shutdown snapshot.
-	if m.isClosing() {
-		_ = p.signalGroup(syscall.SIGKILL)
-	}
-
-	p.pumps.Add(2)
-	go p.pump("stdout", stdoutR)
-	go p.pump("stderr", stderrR)
-	go m.watch(p)
-
-	return snapshot, nil
-}
-
-// List returns independent snapshots of every retained process, sorted by ID.
-func (m *Manager) List() []Snapshot {
-	m.mu.Lock()
-	out := make([]Snapshot, 0, len(m.processes))
-	for _, p := range m.processes {
-		out = append(out, p.snapshot())
-	}
-	m.mu.Unlock()
-
-	slices.SortFunc(out, func(a, b Snapshot) int { return strings.Compare(a.ID, b.ID) })
-	return out
-}
-
-// Get returns a copied snapshot for id, or ErrNotFound.
-func (m *Manager) Get(id string) (Snapshot, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	p, ok := m.processes[id]
-	if !ok {
-		return Snapshot{}, fmt.Errorf("%w: %s", ErrNotFound, id)
-	}
-	return p.snapshot(), nil
-}
-
-// Delete removes an exited process record. A running process is ErrConflict and
-// an unknown ID is ErrNotFound.
-func (m *Manager) Delete(id string) error {
-	m.mu.Lock()
-	p, ok := m.processes[id]
-	if !ok {
-		m.mu.Unlock()
-		return fmt.Errorf("%w: %s", ErrNotFound, id)
-	}
-	if p.status == StatusRunning {
-		m.mu.Unlock()
-		return fmt.Errorf("%w: process %s is still running", ErrConflict, id)
-	}
-	delete(m.processes, id)
-	m.mu.Unlock()
-	m.releaseLogCharge(p)
-	return nil
 }
 
 // watch is the sole cmd.Wait owner for p. It waits out the direct child and

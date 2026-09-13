@@ -14,6 +14,12 @@ import (
 	"time"
 )
 
+// runPeakMultiplier is the conservative per-run peak reservation factor applied
+// to the effective per-stream output cap: 2x for two raw captures, up to 6x for
+// UTF-8 replacement/result strings, and up to 12x for JSON escaping plus
+// encoder buffers.
+const runPeakMultiplier = 20
+
 // Validate reports static RunRequest errors that do not depend on the active
 // configuration: a required command, positive optional timeout/output caps, and
 // a timeout representable as a time.Duration. Manager.Run additionally enforces
@@ -67,16 +73,14 @@ func resolveRunOutputCap(cfg Config, requested *int64) (int, error) {
 	return int(*requested), nil
 }
 
-// runPeakBytes returns the conservative per-run peak reservation of 20 times
-// the effective per-stream output cap. The multiplication is checked so a
-// pathological cap cannot wrap the reservation. The 20x model is 2x for two raw
-// captures, up to 6x for UTF-8 replacement/result strings, and up to 12x for
-// JSON escaping plus encoder buffers.
+// runPeakBytes returns the conservative per-run peak reservation of
+// runPeakMultiplier times the effective per-stream output cap. The
+// multiplication is checked so a pathological cap cannot wrap the reservation.
 func runPeakBytes(maxOutputBytes int) (int, error) {
-	if maxOutputBytes < 0 || maxOutputBytes > math.MaxInt/20 {
-		return 0, fmt.Errorf("%w: output cap %d overflows the 20x peak reservation", ErrValidation, maxOutputBytes)
+	if maxOutputBytes < 0 || maxOutputBytes > math.MaxInt/runPeakMultiplier {
+		return 0, fmt.Errorf("%w: output cap %d overflows the %dx peak reservation", ErrValidation, maxOutputBytes, runPeakMultiplier)
 	}
-	return maxOutputBytes * 20, nil
+	return maxOutputBytes * runPeakMultiplier, nil
 }
 
 // capture reads r until EOF, retaining at most limit bytes and discarding the
@@ -107,43 +111,59 @@ func capture(r io.Reader, limit int) (string, bool) {
 	return strings.ToValidUTF8(buf.String(), "\uFFFD"), truncated
 }
 
-// Run executes one bounded one-shot command with null stdin, two output pipes,
-// and an independent process group. It snapshots the active configuration once,
-// validates requested timeout/output caps against the active maxima, and
-// atomically reserves one shared process slot plus a checked
-// 20*effectiveMaxOutputBytes peak before spawning. Insufficient capacity is
-// ErrCapacity with no partial reservation and no spawn.
-//
-// Both streams are captured concurrently up to their own effective cap while
-// the remainder is drained and discarded. cmd.Wait races the requested timeout
-// and the caller context; a timeout or cancellation SIGKILLs the captured
-// negative PGID and always reaps the direct child. The sole waiter observes the
-// direct child's exit unreaped (Linux), SIGKILLs the captured group and marks
-// it exited under the group's signal gate while the zombie still owns the PID,
-// and only then reaps the child with cmd.Wait, before publishing the result or
-// joining captures. Descendants therefore cannot hold the inherited pipes open
-// and no external signal path can ever target a recycled PGID. Platforms
-// without an unreaped observation keep the reap-then-kill order.
-func (m *Manager) Run(ctx context.Context, req RunRequest) (RunResult, error) {
+// runPlan is the validated, prepared state of one one-shot run before it is
+// spawned. prepareRun creates the pipes; the caller owns closing the read ends.
+type runPlan struct {
+	cmd     *exec.Cmd
+	stdoutR *os.File
+	stderrR *os.File
+	stdoutW *os.File
+	stderrW *os.File
+	timeout time.Duration
+	outCap  int
+	peak    int
+
+	pid  int
+	gate *signalGate
+}
+
+// captureResult is one stream's captured text and truncation flag.
+type captureResult struct {
+	text      string
+	truncated bool
+}
+
+// runOutcome is the result of waiting out one spawned run.
+type runOutcome struct {
+	stdout   captureResult
+	stderr   captureResult
+	waitErr  error
+	timedOut bool
+}
+
+// prepareRun validates req against a single configuration snapshot, resolves
+// the effective timeout and output cap, checks ctx, and builds the command with
+// explicit stdout/stderr pipes. On failure every created pipe is closed.
+func (m *Manager) prepareRun(ctx context.Context, req RunRequest) (*runPlan, error) {
 	if err := req.Validate(); err != nil {
-		return RunResult{}, err
+		return nil, err
 	}
 	cfg := m.config.load()
 
 	timeout, err := resolveRunTimeout(cfg, req.TimeoutMs)
 	if err != nil {
-		return RunResult{}, err
+		return nil, err
 	}
 	outCap, err := resolveRunOutputCap(cfg, req.MaxOutputBytes)
 	if err != nil {
-		return RunResult{}, err
+		return nil, err
 	}
 	peak, err := runPeakBytes(outCap)
 	if err != nil {
-		return RunResult{}, fmt.Errorf("%w: %v", ErrValidation, err)
+		return nil, fmt.Errorf("%w: %v", ErrValidation, err)
 	}
 	if err := ctx.Err(); err != nil {
-		return RunResult{}, fmt.Errorf("%w: %v", ErrGateway, err)
+		return nil, fmt.Errorf("%w: %v", ErrGateway, err)
 	}
 
 	command := strings.TrimSpace(req.Command)
@@ -160,79 +180,99 @@ func (m *Manager) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 
 	stdoutR, stdoutW, err := os.Pipe()
 	if err != nil {
-		return RunResult{}, fmt.Errorf("%w: stdout pipe: %v", ErrStart, err)
+		return nil, fmt.Errorf("%w: stdout pipe: %v", ErrStart, err)
 	}
-	defer closePipe(stdoutR)
 	stderrR, stderrW, err := os.Pipe()
 	if err != nil {
+		closePipe(stdoutR)
 		closePipe(stdoutW)
-		return RunResult{}, fmt.Errorf("%w: stderr pipe: %v", ErrStart, err)
+		return nil, fmt.Errorf("%w: stderr pipe: %v", ErrStart, err)
 	}
-	defer closePipe(stderrR)
 	cmd.Stdout = stdoutW
 	cmd.Stderr = stderrW
+	return &runPlan{
+		cmd:     cmd,
+		stdoutR: stdoutR,
+		stderrR: stderrR,
+		stdoutW: stdoutW,
+		stderrW: stderrW,
+		timeout: timeout,
+		outCap:  outCap,
+		peak:    peak,
+	}, nil
+}
 
-	if err := m.reserveRun(peak); err != nil {
-		closePipe(stdoutW)
-		closePipe(stderrW)
-		return RunResult{}, err
+// closeReads closes both capture read ends. It is the caller's deferred cleanup.
+func (p *runPlan) closeReads() {
+	closePipe(p.stdoutR)
+	closePipe(p.stderrR)
+}
+
+// closeWrites drops the parent's write ends so both captures observe EOF once
+// the direct child and every descendant have closed theirs.
+func (p *runPlan) closeWrites() {
+	closePipe(p.stdoutW)
+	closePipe(p.stderrW)
+}
+
+// spawnRun reserves capacity, starts plan's command, drops the parent's write
+// ends, and registers the live signal gate. It returns release and unregister
+// callbacks the caller must invoke exactly once. On failure it closes the
+// write ends and leaves no reservation.
+func (m *Manager) spawnRun(plan *runPlan) (release, unregister func(), err error) {
+	if err := m.reserveRun(plan.peak); err != nil {
+		plan.closeWrites()
+		return nil, nil, err
 	}
 	released := false
-	release := func() {
+	release = func() {
 		if released {
 			return
 		}
 		released = true
-		m.releaseRun(peak)
+		m.releaseRun(plan.peak)
 	}
-	defer release()
-
-	start := time.Now()
-	if err := cmd.Start(); err != nil {
-		closePipe(stdoutW)
-		closePipe(stderrW)
-		return RunResult{}, fmt.Errorf("%w: %v", ErrStart, err)
+	if err := plan.cmd.Start(); err != nil {
+		plan.closeWrites()
+		release()
+		return nil, nil, fmt.Errorf("%w: %v", ErrStart, err)
 	}
-	// The parent must drop its write ends so the captures observe EOF once the
-	// direct child and any descendants have exited.
-	closePipe(stdoutW)
-	closePipe(stderrW)
+	plan.closeWrites()
 
-	pid := cmd.Process.Pid
-	gate := &signalGate{pid: pid}
+	pid := plan.cmd.Process.Pid
+	plan.pid = pid
+	plan.gate = &signalGate{pid: pid, proc: plan.cmd.Process}
 	// Register the live group before checking closing so a concurrent Shutdown
 	// either sees this gate in its snapshot or observes closing here.
 	m.runGroupsMu.Lock()
-	m.runGroups[pid] = gate
+	m.runGroups[pid] = plan.gate
 	m.runGroupsMu.Unlock()
-	unregister := func() {
+	unregister = func() {
 		m.runGroupsMu.Lock()
 		delete(m.runGroups, pid)
 		m.runGroupsMu.Unlock()
 	}
-	defer unregister()
-
-	// killGroup is the external signaling path; it becomes a no-op once the
-	// waiter has SIGKILLed and marked the group exited.
-	killGroup := func() {
-		_ = gate.signal(syscall.SIGKILL)
-	}
 	if m.isClosing() {
-		killGroup()
+		_ = plan.gate.signal(syscall.SIGKILL)
 	}
+	return release, unregister, nil
+}
 
-	type captureResult struct {
-		text      string
-		truncated bool
-	}
+// awaitRun starts both captures and races the direct child's exit against the
+// plan timeout and the caller context. A timeout or cancellation SIGKILLs the
+// captured negative PGID and always reaps the direct child. It unregisters the
+// group before returning so a later Shutdown cannot signal a reused PID.
+func (m *Manager) awaitRun(ctx context.Context, plan *runPlan, unregister func()) runOutcome {
+	killGroup := func() { _ = plan.gate.signal(syscall.SIGKILL) }
+
 	stdoutCh := make(chan captureResult, 1)
 	stderrCh := make(chan captureResult, 1)
 	go func() {
-		text, truncated := capture(stdoutR, outCap)
+		text, truncated := capture(plan.stdoutR, plan.outCap)
 		stdoutCh <- captureResult{text: text, truncated: truncated}
 	}()
 	go func() {
-		text, truncated := capture(stderrR, outCap)
+		text, truncated := capture(plan.stderrR, plan.outCap)
 		stderrCh <- captureResult{text: text, truncated: truncated}
 	}()
 
@@ -242,65 +282,110 @@ func (m *Manager) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		// exit without reaping it, SIGKILL the captured group and mark it
 		// exited under the signal gate while the zombie still owns the PID,
 		// then reap with cmd.Wait so the real exit status is published.
-		// Platforms without an unreaped observation use the fallback order.
+		// Platforms without an unreaped observation put the gate in
+		// direct-only mode before reaping and mark it exited after, with no
+		// post-reap group signal. No gate lock is held across cmd.Wait.
 		var waitErr error
-		if observeExit(pid) {
-			gate.exit()
-			waitErr = cmd.Wait()
+		if m.observedExit(plan.pid) {
+			plan.gate.exit()
+			waitErr = plan.cmd.Wait()
 		} else {
-			waitErr = cmd.Wait()
-			gate.exit()
+			plan.gate.fallback()
+			waitErr = plan.cmd.Wait()
+			plan.gate.markExited()
 		}
 		waitCh <- waitErr
 	}()
 
-	timer := time.NewTimer(timeout)
+	timer := time.NewTimer(plan.timeout)
 	defer timer.Stop()
 
-	var waitErr error
-	timedOut := false
+	outcome := runOutcome{}
 	select {
-	case waitErr = <-waitCh:
+	case outcome.waitErr = <-waitCh:
 		// The waiter already killed and marked the group.
 	case <-timer.C:
-		timedOut = true
+		outcome.timedOut = true
 		killGroup()
-		waitErr = <-waitCh
+		outcome.waitErr = <-waitCh
 	case <-ctx.Done():
 		killGroup()
-		waitErr = <-waitCh
+		outcome.waitErr = <-waitCh
 	}
 
 	// The direct child has been reaped; stop advertising this group so a later
 	// Shutdown cannot signal a reused PID.
 	unregister()
 
-	stdoutRes := <-stdoutCh
-	stderrRes := <-stderrCh
-	duration := time.Since(start).Milliseconds()
+	outcome.stdout = <-stdoutCh
+	outcome.stderr = <-stderrCh
+	return outcome
+}
 
-	if ctxErr := ctx.Err(); ctxErr != nil && !timedOut {
+// finishRun maps the outcome to a RunResult. A non-timeout context error or a
+// non-exit wait error is an ErrGateway failure.
+func finishRun(ctx context.Context, plan *runPlan, outcome runOutcome, started time.Time) (RunResult, error) {
+	duration := time.Since(started).Milliseconds()
+
+	if ctxErr := ctx.Err(); ctxErr != nil && !outcome.timedOut {
 		return RunResult{}, fmt.Errorf("%w: %v", ErrGateway, ctxErr)
 	}
-	if waitErr != nil {
+	if outcome.waitErr != nil {
 		var exitErr *exec.ExitError
-		if !errors.As(waitErr, &exitErr) {
-			return RunResult{}, fmt.Errorf("%w: wait: %v", ErrGateway, waitErr)
+		if !errors.As(outcome.waitErr, &exitErr) {
+			return RunResult{}, fmt.Errorf("%w: wait: %v", ErrGateway, outcome.waitErr)
 		}
 	}
 
 	result := RunResult{
-		TimedOut:        timedOut,
-		Stdout:          stdoutRes.text,
-		Stderr:          stderrRes.text,
-		StdoutTruncated: stdoutRes.truncated,
-		StderrTruncated: stderrRes.truncated,
+		TimedOut:        outcome.timedOut,
+		Stdout:          outcome.stdout.text,
+		Stderr:          outcome.stderr.text,
+		StdoutTruncated: outcome.stdout.truncated,
+		StderrTruncated: outcome.stderr.truncated,
 		DurationMs:      duration,
 	}
-	if !timedOut && cmd.ProcessState != nil {
-		if code := cmd.ProcessState.ExitCode(); code >= 0 {
+	if !outcome.timedOut && plan.cmd.ProcessState != nil {
+		if code := plan.cmd.ProcessState.ExitCode(); code >= 0 {
 			result.ExitCode = &code
 		}
 	}
 	return result, nil
+}
+
+// Run executes one bounded one-shot command with null stdin, two output pipes,
+// and an independent process group. It snapshots the active configuration once,
+// validates requested timeout/output caps against the active maxima, and
+// atomically reserves one shared process slot plus a checked
+// runPeakMultiplier*effectiveMaxOutputBytes peak before spawning. Insufficient
+// capacity is ErrCapacity with no partial reservation and no spawn.
+//
+// Both streams are captured concurrently up to their own effective cap while
+// the remainder is drained and discarded. cmd.Wait races the requested timeout
+// and the caller context; a timeout or cancellation SIGKILLs the captured
+// negative PGID and always reaps the direct child. The sole waiter observes the
+// direct child's exit unreaped (Linux), SIGKILLs the captured group and marks
+// it exited under the group's signal gate while the zombie still owns the PID,
+// and only then reaps the child with cmd.Wait, before publishing the result or
+// joining captures. Descendants therefore cannot hold the inherited pipes open
+// and no external signal path can ever target a recycled PGID. Platforms
+// without an unreaped observation switch the gate to direct-only before reaping
+// and send no post-reap group signal, so descendant cleanup is best-effort.
+func (m *Manager) Run(ctx context.Context, req RunRequest) (RunResult, error) {
+	plan, err := m.prepareRun(ctx, req)
+	if err != nil {
+		return RunResult{}, err
+	}
+	defer plan.closeReads()
+
+	started := time.Now()
+	release, unregister, err := m.spawnRun(plan)
+	if err != nil {
+		return RunResult{}, err
+	}
+	defer release()
+	defer unregister()
+
+	outcome := m.awaitRun(ctx, plan, unregister)
+	return finishRun(ctx, plan, outcome, started)
 }

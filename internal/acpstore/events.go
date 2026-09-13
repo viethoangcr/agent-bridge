@@ -115,7 +115,8 @@ func (s *Store) Events(ctx context.Context, serverID string, q EventQuery) ([]Ev
 	if err != nil {
 		return nil, fmt.Errorf("list events for server %q: %w", serverID, err)
 	}
-	defer rows.Close()
+	// Close errors are redundant with the scan/Err checks below; ignore intentionally.
+	defer func() { _ = rows.Close() }()
 
 	var events []Event
 	for rows.Next() {
@@ -147,11 +148,6 @@ func (o Output) valid() bool {
 // is inserted with created_at_ms; an existing row keeps created_at_ms and has
 // its cwd and updated_at_ms replaced.
 func upsertSession(ctx context.Context, tx *sql.Tx, serverID string, mutation *SessionMutation, now int64) error {
-	switch mutation.Lifecycle {
-	case "new", "load", "resume":
-	default:
-		return nil
-	}
 	if mutation.SessionID == "" {
 		return nil
 	}

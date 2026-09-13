@@ -211,50 +211,6 @@ func TestDockerStateRestart(t *testing.T) {
 	}
 }
 
-// restartContainer starts one bridge container on an existing named volume so
-// two generations can share durable state. A non-nil entrypoint overrides the
-// image entrypoint, which the sentinel negative check uses to occupy a PID
-// before the bridge starts.
-func restartContainer(t *testing.T, image, token, volume string, env map[string]string, entrypoint []string) *container {
-	t.Helper()
-	c := &container{
-		t:              t,
-		name:           "agent-bridge-e2e-state-" + uniqueSuffix(),
-		image:          image,
-		token:          token,
-		volume:         volume,
-		requestTimeout: requestTimeout,
-	}
-	args := []string{
-		"run", "-d", "--name", c.name,
-		"-p", "127.0.0.1::" + containerPort,
-		"-e", "AGENT_BRIDGE_TOKEN=" + token,
-		"-v", volume + ":/workspace",
-	}
-	for key, value := range env {
-		args = append(args, "-e", key+"="+value)
-	}
-	if len(entrypoint) > 0 {
-		args = append(args, "--entrypoint", entrypoint[0])
-	}
-	args = append(args, image)
-	if len(entrypoint) > 1 {
-		args = append(args, entrypoint[1:]...)
-	}
-	if out, err := docker(args...); err != nil {
-		t.Fatalf("docker run: %v\n%s", err, out)
-	}
-	t.Cleanup(c.cleanup)
-
-	port, err := c.discoverPort()
-	if err != nil {
-		t.Fatalf("%v\n%s", err, c.diagnostics())
-	}
-	c.port = port
-	c.base = "http://127.0.0.1:" + port
-	return c
-}
-
 // assertServerStatus fetches serverID's status and asserts the durable status
 // plus whether a live PID is present.
 func assertServerStatus(t *testing.T, c *container, serverID, wantStatus string, wantPID bool) (statusView, int) {
@@ -299,16 +255,15 @@ func assertReinitializeProblem(t *testing.T, contentType string, body []byte) {
 // planted sleep rather than a zombie.
 func assertSentinelSurvived(t *testing.T, name string, pid int) {
 	t.Helper()
-	out, err := docker("exec", name, "cat", "/proc/"+strconv.Itoa(pid)+"/stat")
-	if err != nil {
-		t.Fatalf("sentinel pid %d vanished: startup recovery signaled the persisted PID: %v\n%s", pid, err, out)
+	stat, ok := readProcStat(name, pid)
+	if !ok {
+		t.Fatalf("sentinel pid %d vanished: startup recovery signaled the persisted PID: %s", pid, containerDiagnostics(name))
 	}
-	stat := string(out)
 	end := strings.LastIndex(stat, ")")
 	if end < 0 || end+2 >= len(stat) {
 		t.Fatalf("unparseable /proc/%d/stat: %q", pid, stat)
 	}
-	if state := stat[end+2]; state == 'Z' {
+	if state, _ := parseProcState(stat); state == 'Z' {
 		t.Fatalf("sentinel pid %d is a zombie: startup recovery signaled the persisted PID: %q", pid, stat)
 	}
 	if comm := stat[strings.Index(stat, "(")+1 : end]; comm != "sleep" {
@@ -320,10 +275,7 @@ func assertSentinelSurvived(t *testing.T, name string, pid int) {
 // the durable cwd for serverID's session, which no HTTP endpoint exposes.
 func persistedCWD(t *testing.T, c *container, serverID, sessionID string) string {
 	t.Helper()
-	dir := t.TempDir()
-	if out, err := docker("cp", c.name+":/workspace/.", dir); err != nil {
-		t.Fatalf("docker cp workspace: %v\n%s", err, out)
-	}
+	dir := copyWorkspace(t, c)
 	ctx := context.Background()
 	store, err := acpstore.Open(ctx, filepath.Join(dir, "agent-bridge.db"))
 	if err != nil {

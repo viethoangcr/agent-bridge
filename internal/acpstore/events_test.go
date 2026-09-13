@@ -189,7 +189,7 @@ func TestSequenceOverflow(t *testing.T) {
 	_, err = store.AppendOutput(t.Context(), "srv", Output{
 		Kind:     "response",
 		Payload:  json.RawMessage(`{"overflow":true}`),
-		Mutation: &SessionMutation{Lifecycle: "new", SessionID: "sess-x", CWD: "/x"},
+		Mutation: &SessionMutation{SessionID: "sess-x", CWD: "/x"},
 	})
 	if !errors.Is(err, ErrSequenceExhausted) {
 		t.Fatalf("overflow error = %v, want ErrSequenceExhausted", err)
@@ -220,7 +220,7 @@ func TestLifecycleCommit(t *testing.T) {
 		event, err := store.AppendOutput(t.Context(), "srv", Output{
 			Kind:     "response",
 			Payload:  json.RawMessage(`{"result":{"sessionId":"sess-new"}}`),
-			Mutation: &SessionMutation{Lifecycle: "new", SessionID: "sess-new", CWD: "/work"},
+			Mutation: &SessionMutation{SessionID: "sess-new", CWD: "/work"},
 		})
 		if err != nil {
 			t.Fatalf("AppendOutput: %v", err)
@@ -251,7 +251,7 @@ func TestLifecycleCommit(t *testing.T) {
 		if _, err := store.AppendOutput(t.Context(), "srv", Output{
 			Kind:     "response",
 			Payload:  json.RawMessage(`{"result":{}}`),
-			Mutation: &SessionMutation{Lifecycle: "load", SessionID: "s-load", CWD: "/new-load"},
+			Mutation: &SessionMutation{SessionID: "s-load", CWD: "/new-load"},
 		}); err != nil {
 			t.Fatalf("load AppendOutput: %v", err)
 		}
@@ -259,7 +259,7 @@ func TestLifecycleCommit(t *testing.T) {
 		if _, err := store.AppendOutput(t.Context(), "srv", Output{
 			Kind:     "response",
 			Payload:  json.RawMessage(`{"result":{}}`),
-			Mutation: &SessionMutation{Lifecycle: "resume", SessionID: "s-resume", CWD: "/new-resume"},
+			Mutation: &SessionMutation{SessionID: "s-resume", CWD: "/new-resume"},
 		}); err != nil {
 			t.Fatalf("resume AppendOutput: %v", err)
 		}
@@ -315,7 +315,7 @@ func TestLifecycleCommit(t *testing.T) {
 		_, err = store.AppendOutput(t.Context(), "srv", Output{
 			Kind:     "response",
 			Payload:  json.RawMessage(`{"result":{"sessionId":"sess-fail"}}`),
-			Mutation: &SessionMutation{Lifecycle: "new", SessionID: "sess-fail", CWD: "/fail"},
+			Mutation: &SessionMutation{SessionID: "sess-fail", CWD: "/fail"},
 		})
 		if err == nil {
 			t.Fatal("AppendOutput with colliding sequence succeeded, want constraint failure")
@@ -331,6 +331,33 @@ func TestLifecycleCommit(t *testing.T) {
 		assertRowCount(t, store, "events", 1)
 		assertRowCount(t, store, "server_sessions", 0)
 	})
+}
+
+// TestSessionMutationUpsertsWithoutLifecycle proves the store treats a
+// non-nil mutation as a roster/cwd upsert without knowing ACP lifecycle names;
+// the runtime classifies lifecycle before constructing the mutation.
+func TestSessionMutationUpsertsWithoutLifecycle(t *testing.T) {
+	store := openWithClock(t, filepath.Join(t.TempDir(), "mutation.db"), newFakeClock(6_000).Now)
+	if _, err := store.CreateServer(t.Context(), "srv", "claude"); err != nil {
+		t.Fatalf("CreateServer: %v", err)
+	}
+
+	if _, err := store.AppendOutput(t.Context(), "srv", Output{
+		Kind:     "response",
+		Payload:  json.RawMessage(`{"result":{}}`),
+		Mutation: &SessionMutation{SessionID: "sess", CWD: "/cwd"},
+	}); err != nil {
+		t.Fatalf("AppendOutput: %v", err)
+	}
+
+	session, err := store.Session(t.Context(), "srv", "sess")
+	if err != nil {
+		t.Fatalf("Session: %v", err)
+	}
+	want := Session{ServerID: "srv", SessionID: "sess", CWD: "/cwd", CreatedAtMs: 6_000, UpdatedAtMs: 6_000}
+	if session != want {
+		t.Errorf("session = %+v, want %+v", session, want)
+	}
 }
 
 func TestConcurrentAppend(t *testing.T) {

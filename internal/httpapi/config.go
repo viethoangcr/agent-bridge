@@ -8,9 +8,6 @@ import (
 	"github.com/viethoangcr/agent-bridge/internal/filesystem"
 )
 
-// maxConfigJSONBytes is the master 10MiB JSON body ceiling for config requests.
-const maxConfigJSONBytes = 10 << 20
-
 // registerConfigRoutes installs the method-specific config endpoints. No
 // methodless same-path fallbacks are registered, so wrong methods are owned by
 // the Phase 01 root fallback.
@@ -66,11 +63,8 @@ func (s *Server) handleProjectConfig(w http.ResponseWriter, r *http.Request, kin
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(body)
 	case http.MethodPut:
-		if !requireJSONContentType(w, r) {
-			return
-		}
 		var body json.RawMessage
-		if !DecodeJSON(w, r, s.configJSONLimit, &body) {
+		if !decodeJSONRequest(w, r, s.configJSONLimit, &body) {
 			return
 		}
 		if err := s.deps.Config.Put(kind, directory, body); err != nil {
@@ -100,11 +94,11 @@ func writeProjectConfigError(w http.ResponseWriter, err error) {
 		case filesystem.ErrorKindInvalid:
 			status, detail = http.StatusBadRequest, "invalid project config request"
 		case filesystem.ErrorKindNotFound:
-			status, detail = http.StatusNotFound, "not found"
+			status, detail = http.StatusNotFound, detailNotFound
 		case filesystem.ErrorKindConflict:
 			status, detail = http.StatusConflict, "project config conflict"
 		case filesystem.ErrorKindTooLarge:
-			status, detail = http.StatusRequestEntityTooLarge, "request body too large"
+			status, detail = http.StatusRequestEntityTooLarge, detailBodyTooLarge
 		}
 	}
 	writeProblem(w, status, detail)

@@ -158,6 +158,12 @@ func newRuntimeStore(t *testing.T) *acpstore.Store {
 // startHelperRuntime starts a runtime running the test binary in mode with a
 // pid file. A bounded cleanup always terminates any reported PIDs.
 func startHelperRuntime(t *testing.T, mode string, timeout time.Duration) (*Runtime, *acpstore.Store, string) {
+	return startHelperRuntimeHooked(t, mode, timeout, nil, nil)
+}
+
+// startHelperRuntimeHooked is startHelperRuntime with the waiter's afterReap
+// and observeExit test hooks installed before the waiter goroutine launches.
+func startHelperRuntimeHooked(t *testing.T, mode string, timeout time.Duration, afterReap func(), observeExit func(*Runtime, int) bool) (*Runtime, *acpstore.Store, string) {
 	t.Helper()
 	store := newRuntimeStore(t)
 	pidPath := filepath.Join(t.TempDir(), "helper-pids.json")
@@ -165,7 +171,7 @@ func startHelperRuntime(t *testing.T, mode string, timeout time.Duration) (*Runt
 	env = withEnv(env, helperPIDFileEnv, pidPath)
 	spec := LaunchSpec{Program: os.Args[0], Env: env}
 
-	r, err := Start(t.Context(), store, "srv", spec, timeout, testLogger())
+	r, err := start(t.Context(), store, "srv", spec, timeout, testLogger(), afterReap, observeExit)
 	if err != nil {
 		t.Fatalf("Start(%s): %v", mode, err)
 	}
@@ -248,6 +254,21 @@ func waitReaped(t *testing.T, pid int) {
 	t.Fatalf("direct child %d was not reaped within deadline", pid)
 }
 
+// requireAliveFor fails if pid disappears or becomes a zombie within window.
+// The window makes an "unsignaled" assertion reliable against signal delivery
+// latency.
+func requireAliveFor(t *testing.T, pid int, window time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(window)
+	for time.Now().Before(deadline) {
+		state, ok := processState(pid)
+		if !ok || state == 'Z' {
+			t.Fatalf("process %d state = %q (present %v), want alive for %s", pid, state, ok, window)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
 // waitGoneOrZombie requires a descendant to disappear or become a zombie.
 func waitGoneOrZombie(t *testing.T, pid int) {
 	t.Helper()
@@ -266,6 +287,16 @@ func waitGoneOrZombie(t *testing.T, pid int) {
 type nopWriteCloser struct{ *bytes.Buffer }
 
 func (nopWriteCloser) Close() error { return nil }
+
+// awaitSignal fails rather than hanging when an expected signal never arrives.
+func awaitSignal(t *testing.T, ch <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+	}
+}
 
 // concurrentKillers calls Kill from n goroutines and returns their errors.
 func concurrentKillers(ctx context.Context, r *Runtime, n int) []error {

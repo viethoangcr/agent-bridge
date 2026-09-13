@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"os/exec"
 	"sync"
 	"sync/atomic"
@@ -39,10 +40,11 @@ type Runtime struct {
 	cmd    *exec.Cmd
 	cancel context.CancelFunc
 
-	// pgid is the captured process-group ID of the direct child; it is never
-	// derived from persisted state. pid is cleared to zero after exit.
-	pgid atomic.Int64
-	pid  atomic.Int64
+	// pid is the live direct-child PID, cleared to zero after exit. External
+	// Kill signals only this child's os.Process handle; the sole waiter owns
+	// the negative-PGID group kill and runs it only while the child is
+	// unreaped, so a recycled PGID is never targeted.
+	pid atomic.Int64
 
 	writeMu sync.Mutex
 	stdin   io.WriteCloser
@@ -114,6 +116,18 @@ type Runtime struct {
 	// deterministically interleave a Post with terminal teardown.
 	beforeTerminalClear func()
 
+	// afterReap runs in the sole waiter immediately after cmd.Wait returns,
+	// before exit is published. It is nil in production and exists only so tests
+	// can deterministically interleave an external signal with the reap-to-exit
+	// transition.
+	afterReap func()
+
+	// observeExit reports whether the direct child's exit can be peeked without
+	// reaping. It is nil in production, where procgroup.ObserveExit is used, and
+	// exists only so tests can force the fallback reap-without-group-kill path
+	// or pause the waiter around its group kill.
+	observeExit func(*Runtime, int) bool
+
 	// wake is the capacity-one coalesced output/termination wakeup channel.
 	// wakeMu guards the closed flag so a late signal cannot panic after finish
 	// closes the channel.
@@ -135,6 +149,12 @@ type Runtime struct {
 // after a successful spawn; any post-spawn failure kills the group and marks
 // the row exited.
 func Start(ctx context.Context, store *acpstore.Store, serverID string, spec LaunchSpec, requestTimeout time.Duration, log *slog.Logger) (*Runtime, error) {
+	return start(ctx, store, serverID, spec, requestTimeout, log, nil, nil)
+}
+
+// start is Start with the test-only afterReap and observeExit hooks threaded
+// through so they are set before the sole waiter goroutine launches.
+func start(ctx context.Context, store *acpstore.Store, serverID string, spec LaunchSpec, requestTimeout time.Duration, log *slog.Logger, afterReap func(), observeExit func(*Runtime, int) bool) (*Runtime, error) {
 	if requestTimeout <= 0 {
 		return nil, fmt.Errorf("acpruntime: request timeout must be positive, got %s", requestTimeout)
 	}
@@ -148,25 +168,54 @@ func Start(ctx context.Context, store *acpstore.Store, serverID string, spec Lau
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.WaitDelay = waitDelay
 
-	stdin, err := cmd.StdinPipe()
+	stdin, stdout, stderr, err := openProcessPipes(cmd, spec.Program)
 	if err != nil {
 		cancel()
-		return nil, fmt.Errorf("acpruntime: stdin pipe for %q: %w", spec.Program, err)
+		return nil, err
 	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		cancel()
-		closePipe(stdin)
-		return nil, fmt.Errorf("acpruntime: stdout pipe for %q: %w", spec.Program, err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
+
+	r := newRuntime(store, serverID, log, cmd, cancel, stdin, requestTimeout)
+	r.afterReap = afterReap
+	r.observeExit = observeExit
+	// Keep exec.CommandContext's default direct-child Cancel: a canceled start
+	// kills only the leader, and the sole waiter then cleans up the group before
+	// reaping. A group-killing Cancel would contend with the waiter and could
+	// signal a PGID it no longer owns.
+
+	if err := cmd.Start(); err != nil {
 		cancel()
 		closePipe(stdin)
 		closePipe(stdout)
-		return nil, fmt.Errorf("acpruntime: stderr pipe for %q: %w", spec.Program, err)
+		closePipe(stderr)
+		r.markExited()
+		return nil, fmt.Errorf("acpruntime: start %q: %w", spec.Program, err)
 	}
 
+	r.pid.Store(int64(cmd.Process.Pid))
+
+	// A cancellation that raced the spawn may not have been seen by the default
+	// cancel watcher yet; observe it now before publishing live.
+	if err := runCtx.Err(); err != nil {
+		return nil, r.abortAfterSpawn(fmt.Errorf("acpruntime: spawn %q canceled: %w", spec.Program, err), stdout, stderr)
+	}
+
+	if err := r.publishLive(ctx, cmd.Process.Pid); err != nil {
+		return nil, r.abortAfterSpawn(fmt.Errorf("acpruntime: mark %q live: %w", serverID, err), stdout, stderr)
+	}
+
+	r.pumps.Add(2)
+	go r.readOutput(stdout)
+	go r.readStderr(stderr)
+	r.startWriter()
+	go r.waitProcess()
+
+	return r, nil
+}
+
+// newRuntime builds the Runtime for one spawned command and wires the
+// store-backed append seam when a store is present. The terminal gate, done,
+// and wakeup channels are created here; startWriter creates the writer channels.
+func newRuntime(store *acpstore.Store, serverID string, log *slog.Logger, cmd *exec.Cmd, cancel context.CancelFunc, stdin io.WriteCloser, requestTimeout time.Duration) *Runtime {
 	r := &Runtime{
 		store:          store,
 		serverID:       serverID,
@@ -184,45 +233,7 @@ func Start(ctx context.Context, store *acpstore.Store, serverID string, spec Lau
 	if store != nil {
 		r.appendOutput = store.AppendOutput
 	}
-	// CommandContext's default cancellation kills only the direct child;
-	// replace it with a guarded negative-PGID SIGKILL.
-	cmd.Cancel = func() error { return r.killProcessGroup() }
-
-	if err := cmd.Start(); err != nil {
-		cancel()
-		closePipe(stdin)
-		closePipe(stdout)
-		closePipe(stderr)
-		r.markExited()
-		return nil, fmt.Errorf("acpruntime: start %q: %w", spec.Program, err)
-	}
-
-	// Setpgid guarantees the direct child leads its own group, so the PGID
-	// equals the child PID even when the lookup itself fails.
-	pgid := cmd.Process.Pid
-	if captured, err := syscall.Getpgid(cmd.Process.Pid); err == nil && captured > 1 {
-		pgid = captured
-	}
-	r.pgid.Store(int64(pgid))
-	r.pid.Store(int64(cmd.Process.Pid))
-
-	// A cancellation that raced the spawn was not seen by the guard above
-	// (pgid was not yet captured); observe it now before publishing live.
-	if err := runCtx.Err(); err != nil {
-		return nil, r.abortAfterSpawn(fmt.Errorf("acpruntime: spawn %q canceled: %w", spec.Program, err), stdout, stderr)
-	}
-
-	if err := r.publishLive(ctx, cmd.Process.Pid); err != nil {
-		return nil, r.abortAfterSpawn(fmt.Errorf("acpruntime: mark %q live: %w", serverID, err), stdout, stderr)
-	}
-
-	r.pumps.Add(2)
-	go r.readOutput(stdout)
-	go r.readStderr(stderr)
-	r.startWriter()
-	go r.waitProcess()
-
-	return r, nil
+	return r
 }
 
 // PID returns the live direct-child process ID, or 0 after exit.
@@ -245,11 +256,19 @@ func (r *Runtime) Wait() error {
 	return r.waitErr
 }
 
-// Kill sends SIGKILL to the captured negative PGID, then waits for the direct
-// child and every runtime-owned goroutine. It is idempotent and safe to call
-// concurrently or repeatedly.
+// Kill terminates the direct child through the stdlib-safe os.Process handle,
+// then waits for the runtime to finish. It never signals a process group:
+// os.Process.Kill is race-safe with Wait and returns os.ErrProcessDone once the
+// child has been reaped, so a recycled PGID cannot be targeted by construction.
+// The sole waiter owns the group kill and runs it only while the child is still
+// unreaped. Kill is idempotent and safe to call concurrently or repeatedly.
 func (r *Runtime) Kill(ctx context.Context) error {
-	if err := r.killProcessGroup(); err != nil {
+	select {
+	case <-r.done:
+		return nil
+	default:
+	}
+	if err := r.killChild(); err != nil {
 		return err
 	}
 	select {
@@ -260,214 +279,14 @@ func (r *Runtime) Kill(ctx context.Context) error {
 	}
 }
 
-// waitProcess is the sole cmd.Wait owner. On Linux it first observes the direct
-// child's exit without reaping it, SIGKILLs the captured negative PGID while
-// the zombie still owns the PID so a descendant holding the inherited pipes
-// cannot delay group teardown, and only then reaps with cmd.Wait so the real
-// exit status is available. Platforms without an unreaped observation keep the
-// reap-then-kill order. Either way it closes the terminal gate before killing
-// the group, stops and joins the writer, then joins the pumps and publishes
-// exit.
-func (r *Runtime) waitProcess() {
-	var pid int
-	if r.cmd.Process != nil {
-		pid = r.cmd.Process.Pid
-	}
-	var err error
-	if observeExit(pid) {
-		r.closeTerminal()
-		_ = r.killProcessGroup()
-		err = r.cmd.Wait()
-	} else {
-		err = r.cmd.Wait()
-		r.closeTerminal()
-		_ = r.killProcessGroup()
-	}
-	r.stopWriter()
-	r.closeStdin()
-	r.awaitWriterStopped()
-	r.pumps.Wait()
-	r.finish()
-	r.waitErr = err
-	close(r.done)
-}
-
-// writeRaw writes complete record bytes to the child's stdin and reports how
-// many bytes the pipe accepted. The writer goroutine is its only production
-// caller; writeLine remains for direct framing tests.
-func (r *Runtime) writeRaw(record []byte) (int, error) {
-	r.writeMu.Lock()
-	stdin := r.stdin
-	r.writeMu.Unlock()
-	if stdin == nil {
-		return 0, errNotRunning
-	}
-	return stdin.Write(record)
-}
-
-// writeLine writes one newline-delimited payload to the child's stdin.
-func (r *Runtime) writeLine(line []byte) error {
-	buf := make([]byte, 0, len(line)+1)
-	buf = append(buf, line...)
-	buf = append(buf, '\n')
-	_, err := r.writeRaw(buf)
-	return err
-}
-
-// abortAfterSpawn terminates a just-spawned group and records the server
-// exited for any failure between spawn and live publication.
-func (r *Runtime) abortAfterSpawn(reason error, pipes ...io.Closer) error {
-	_ = r.killProcessGroup()
-	_ = r.cmd.Wait()
-	r.cancel()
-	r.closeStdin()
-	for _, pipe := range pipes {
-		closePipe(pipe)
-	}
-	r.markExited()
-	return reason
-}
-
-// finish publishes exit after the pumps have joined: it persists the synthetic
-// agent-exited notification, marks the row exited (failing every pending
-// correlation with ErrExited), and closes the wakeup channel last so consumers
-// can perform a final replay query.
-func (r *Runtime) finish() {
-	r.cancel()
-	r.closeStdin()
-	r.persistSynthetic(agentExitedMethod, nil)
-	r.markExited()
-	r.closeWake()
-}
-
-// markExited records terminal exit, clears the live PID, fails every pending
-// correlation with ErrExited, and marks the server row exited. The first call
-// wins; later calls are idempotent confirmations.
-func (r *Runtime) markExited() {
-	r.pid.Store(0)
-	r.markTerminal(ErrExited)
-}
-
-// markTerminal records terminal exit while serialized by the status mutex so a
-// queued reconciliation observes terminal state and performs no later busy/idle
-// write. It closes the terminal gate first, then fails every pending waiter
-// with the supplied error on the first call, then marks the row exited where
-// storage permits.
-func (r *Runtime) markTerminal(err error) {
-	r.statusMu.Lock()
-	first := !r.statusExited
-	r.statusExited = true
-	r.statusMu.Unlock()
-
-	// Gate before clear: reserve holds corrMu while checking the gate and
-	// inserting, so an insert either precedes failPending's snapshot and is
-	// failed, or observes the closed gate and is rejected.
-	r.closeTerminal()
-	if hook := r.beforeTerminalClear; hook != nil {
-		hook()
-	}
-	r.exited.Store(true)
-
-	// Gate -> stop/drain writer -> clear correlations -> kill: once the gate
-	// and signal are closed and the serializer has drained, no queued record
-	// can be left uncompleted before waiters are failed.
-	r.stopWriter()
-	r.awaitWriterStopped()
-
-	if first {
-		r.failPending(err)
-	}
-	if r.store == nil {
-		return
-	}
-	if markErr := r.store.MarkExited(context.Background(), r.serverID); markErr != nil {
-		r.log.Error("mark server exited", "server_id", r.serverID, "error", markErr)
-	}
-}
-
-// closeTerminal closes the single terminal signal exactly once. The admission
-// gate is marked closed and drained before this returns, so every writer
-// admission either completed its enqueue before closure or observed the closed
-// gate/signal and rejected; nothing can enqueue afterwards.
-func (r *Runtime) closeTerminal() {
-	r.terminalOnce.Do(func() {
-		r.gate.close()
-		close(r.terminal)
-		r.gate.wait()
-	})
-}
-
-// admissionGate serializes writer admission against terminal closure. close
-// marks the gate closed under the mutex; wait blocks until every admit that
-// entered before closure has left.
-type admissionGate struct {
-	mu     sync.Mutex
-	closed bool
-	wg     sync.WaitGroup
-}
-
-// enter reports whether a writer admission may proceed. It returns false once
-// the gate is closed.
-func (g *admissionGate) enter() bool {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.closed {
-		return false
-	}
-	g.wg.Add(1)
-	return true
-}
-
-// leave releases one admitted writer admission.
-func (g *admissionGate) leave() { g.wg.Done() }
-
-// close marks the gate closed; no later enter succeeds.
-func (g *admissionGate) close() {
-	g.mu.Lock()
-	g.closed = true
-	g.mu.Unlock()
-}
-
-// wait blocks until every in-flight admission has left.
-func (g *admissionGate) wait() { g.wg.Wait() }
-
-// terminalClosed reports whether the terminal gate has closed. A runtime built
-// without a terminal channel never reports closed.
-func (r *Runtime) terminalClosed() bool {
-	select {
-	case <-r.terminal:
-		return true
-	default:
-		return false
-	}
-}
-
-// killProcessGroup sends SIGKILL to the captured negative PGID. It is a no-op
-// before the PGID is captured and tolerant of an already-dead group.
-func (r *Runtime) killProcessGroup() error {
-	pgid := r.pgid.Load()
-	if pgid <= 1 {
+// killChild SIGKILLs the direct child and treats an already-reaped process as
+// success. It never targets a process group.
+func (r *Runtime) killChild() error {
+	if r.cmd == nil || r.cmd.Process == nil {
 		return nil
 	}
-	err := syscall.Kill(int(-pgid), syscall.SIGKILL)
-	if err != nil && !errors.Is(err, syscall.ESRCH) {
+	if err := r.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		return err
 	}
 	return nil
-}
-
-func (r *Runtime) closeStdin() {
-	r.writeMu.Lock()
-	stdin := r.stdin
-	r.stdin = nil
-	r.writeMu.Unlock()
-	// Close outside the lock so a writer blocked in Write is unblocked instead
-	// of deadlocking on the mutex.
-	closePipe(stdin)
-}
-
-func closePipe(c io.Closer) {
-	if c != nil {
-		_ = c.Close()
-	}
 }

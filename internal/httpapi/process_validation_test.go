@@ -39,9 +39,9 @@ func TestProcessValidationDecodeJSON(t *testing.T) {
 			}
 			rec := httptest.NewRecorder()
 			var dst payload
-			ok := decodeProcessJSON(rec, req, tc.limit, &dst)
+			ok := decodeJSONRequest(rec, req, tc.limit, &dst)
 			if ok != tc.wantOK {
-				t.Fatalf("decodeProcessJSON() = %v, want %v (status %d)", ok, tc.wantOK, rec.Code)
+				t.Fatalf("decodeJSONRequest() = %v, want %v (status %d)", ok, tc.wantOK, rec.Code)
 			}
 			if rec.Code != tc.wantStatus {
 				t.Fatalf("status = %d, want %d", rec.Code, tc.wantStatus)
@@ -61,8 +61,8 @@ func TestProcessValidationInputEncodedCeiling(t *testing.T) {
 		{"partial block", 4, 8 + 1024},
 		{"production maximum", 7340032, 9787736},
 		{"above production maximum", 7340033, 9787736},
-		{"above global ceiling clamps", 1 << 30, maxProcessJSONBytes},
-		{"near-maximum clamps", math.MaxInt - 1, maxProcessJSONBytes},
+		{"above global ceiling clamps", 1 << 30, maxJSONBodyBytes},
+		{"near-maximum clamps", math.MaxInt - 1, maxJSONBodyBytes},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -73,13 +73,13 @@ func TestProcessValidationInputEncodedCeiling(t *testing.T) {
 	}
 
 	t.Run("overflow clamps to global ceiling", func(t *testing.T) {
-		if got := inputEncodedBodyLimit(math.MaxInt); got != maxProcessJSONBytes {
-			t.Fatalf("inputEncodedBodyLimit(MaxInt) = %d, want %d", got, maxProcessJSONBytes)
+		if got := inputEncodedBodyLimit(math.MaxInt); got != maxJSONBodyBytes {
+			t.Fatalf("inputEncodedBodyLimit(MaxInt) = %d, want %d", got, maxJSONBodyBytes)
 		}
 	})
 	t.Run("global ceiling is 10MiB", func(t *testing.T) {
-		if maxProcessJSONBytes != 10<<20 {
-			t.Fatalf("maxProcessJSONBytes = %d, want 10MiB", maxProcessJSONBytes)
+		if maxJSONBodyBytes != 10<<20 {
+			t.Fatalf("maxJSONBodyBytes = %d, want 10MiB", maxJSONBodyBytes)
 		}
 	})
 }
@@ -100,7 +100,7 @@ func TestProcessValidationLogsQuery(t *testing.T) {
 		{"since", "?since=5", process.LogQuery{Since: 5}, false},
 		{"tail zero", "?tail=0", process.LogQuery{Tail: &zero}, false},
 		{"tail positive", "?tail=7", process.LogQuery{Tail: &seven}, false},
-		{"unknown key", "?foo=1", process.LogQuery{}, true},
+		{"unknown key deferred to parseQuery", "?foo=1", process.LogQuery{}, false},
 		{"repeated key", "?tail=1&tail=2", process.LogQuery{}, true},
 		{"empty value", "?tail=", process.LogQuery{}, true},
 		{"empty stream", "?stream=", process.LogQuery{}, true},
@@ -257,6 +257,12 @@ func TestProcessEndpointsRejectQueryStrings(t *testing.T) {
 		s, _ := newProcessServer(t)
 		rec := doProcessRequest(t, s, http.MethodGet, "/v1/processes/proc_missing/logs?stream=stdout", "", "")
 		assertProblem(t, rec, http.StatusNotFound)
+	})
+
+	t.Run("logs rejects unknown key", func(t *testing.T) {
+		s, _ := newProcessServer(t)
+		rec := doProcessRequest(t, s, http.MethodGet, "/v1/processes/proc_missing/logs?foo=1", "", "")
+		assertProblem(t, rec, http.StatusBadRequest)
 	})
 }
 
