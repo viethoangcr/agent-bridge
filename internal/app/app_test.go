@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/viethoangcr/agent-bridge/internal/acpproxy"
 	"github.com/viethoangcr/agent-bridge/internal/acpruntime"
 	"github.com/viethoangcr/agent-bridge/internal/acpstore"
 	"github.com/viethoangcr/agent-bridge/internal/config"
@@ -304,6 +305,12 @@ func (f *fakeACPLifecycle) Post(context.Context, string, *string, string, json.R
 }
 
 func (f *fakeACPLifecycle) LivePID(string) (int, bool) { return 0, false }
+
+func (f *fakeACPLifecycle) Subscribe(context.Context, string, int64) (acpproxy.Subscription, error) {
+	return nil, nil
+}
+
+func (f *fakeACPLifecycle) Delete(context.Context, string) error { return nil }
 
 // TestACPRegistryOrder proves app.Run constructs and starts the ACP proxy and
 // runs its pre-drain hook before its post-drain confirmation. The store is

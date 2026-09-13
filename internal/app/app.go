@@ -41,12 +41,15 @@ type acpLifecycle interface {
 }
 
 // acpService is the composed ACP proxy surface: staged shutdown plus the HTTP
-// dispatch methods the server consumes. The concrete *acpproxy.Proxy also
-// satisfies the SSE and DELETE consumer interfaces at runtime.
+// dispatch methods the server consumes, including SSE subscription and
+// lifecycle deletion so every registered ACP route is satisfied at compile
+// time.
 type acpService interface {
 	acpLifecycle
 	Post(ctx context.Context, serverID string, agent *string, method string, payload json.RawMessage) (acpruntime.PostResult, error)
 	LivePID(serverID string) (int, bool)
+	Subscribe(ctx context.Context, serverID string, after int64) (acpproxy.Subscription, error)
+	Delete(ctx context.Context, serverID string) error
 }
 
 // newACPProxy constructs the ACP lifecycle owner. It is a package variable so
