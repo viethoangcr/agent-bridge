@@ -80,7 +80,7 @@ func (m *Manager) Start(req StartRequest) (Snapshot, error) {
 		cwd:            effectiveCwd,
 		status:         StatusRunning,
 		pid:            pid,
-		signals:        signalGate{pid: pid},
+		signals:        signalGate{pid: pid, proc: cmd.Process},
 		createdAtMs:    time.Now().UnixMilli(),
 		manager:        m,
 		cmd:            cmd,

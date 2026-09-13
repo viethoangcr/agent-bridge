@@ -12,8 +12,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-
-	"github.com/viethoangcr/agent-bridge/internal/procgroup"
 )
 
 // runPeakMultiplier is the conservative per-run peak reservation factor applied
@@ -243,7 +241,7 @@ func (m *Manager) spawnRun(plan *runPlan) (release, unregister func(), err error
 
 	pid := plan.cmd.Process.Pid
 	plan.pid = pid
-	plan.gate = &signalGate{pid: pid}
+	plan.gate = &signalGate{pid: pid, proc: plan.cmd.Process}
 	// Register the live group before checking closing so a concurrent Shutdown
 	// either sees this gate in its snapshot or observes closing here.
 	m.runGroupsMu.Lock()
@@ -284,14 +282,17 @@ func (m *Manager) awaitRun(ctx context.Context, plan *runPlan, unregister func()
 		// exit without reaping it, SIGKILL the captured group and mark it
 		// exited under the signal gate while the zombie still owns the PID,
 		// then reap with cmd.Wait so the real exit status is published.
-		// Platforms without an unreaped observation use the fallback order.
+		// Platforms without an unreaped observation put the gate in
+		// direct-only mode before reaping and mark it exited after, with no
+		// post-reap group signal. No gate lock is held across cmd.Wait.
 		var waitErr error
-		if procgroup.ObserveExit(plan.pid) {
+		if m.observedExit(plan.pid) {
 			plan.gate.exit()
 			waitErr = plan.cmd.Wait()
 		} else {
+			plan.gate.fallback()
 			waitErr = plan.cmd.Wait()
-			plan.gate.exit()
+			plan.gate.markExited()
 		}
 		waitCh <- waitErr
 	}()
@@ -368,7 +369,8 @@ func finishRun(ctx context.Context, plan *runPlan, outcome runOutcome, started t
 // and only then reaps the child with cmd.Wait, before publishing the result or
 // joining captures. Descendants therefore cannot hold the inherited pipes open
 // and no external signal path can ever target a recycled PGID. Platforms
-// without an unreaped observation keep the reap-then-kill order.
+// without an unreaped observation switch the gate to direct-only before reaping
+// and send no post-reap group signal, so descendant cleanup is best-effort.
 func (m *Manager) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	plan, err := m.prepareRun(ctx, req)
 	if err != nil {

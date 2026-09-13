@@ -88,6 +88,12 @@ type Manager struct {
 	runGroupsMu sync.Mutex
 	runGroups   map[int]*signalGate
 
+	// observeExit and afterReap are private test seams for the unreaped-exit
+	// observation. Production leaves both nil, so observedExit delegates to
+	// procgroup.ObserveExit and afterReap is never called.
+	observeExit func(pid int) bool
+	afterReap   func(*managedProcess)
+
 	shutdownOnce sync.Once
 	shutdownDone chan struct{}
 
