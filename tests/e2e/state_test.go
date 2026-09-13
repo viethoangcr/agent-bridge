@@ -42,6 +42,7 @@ func TestDockerStateRestart(t *testing.T) {
 	// Step 1: build durable state on the named volume, then terminate abruptly
 	// without DELETE so the durable row keeps stale live metadata.
 	first := restartContainer(t, image, token, volume, nil, nil)
+	first.mustHealthy()
 	initialize(t, first, stateServerID, "mock")
 	sessionID, gotCWD := sessionNewResult(t, first, stateServerID, mockCWD)
 	if gotCWD != mockCWD {
