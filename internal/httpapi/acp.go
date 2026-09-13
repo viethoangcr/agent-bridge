@@ -18,9 +18,6 @@ import (
 	"github.com/viethoangcr/agent-bridge/internal/acpstore"
 )
 
-// maxACPBodyBytes is the ACP POST body bound: one JSON-RPC object, at most 10MiB.
-const maxACPBodyBytes = 10 << 20
-
 // knownACPAgents is the fixed set of query agent identifiers. The resolver also
 // rejects unknown identifiers, but rejecting them here keeps an unknown agent a
 // client 400 instead of a process 502.
@@ -92,13 +89,23 @@ func (s *Server) registerACPRoutes() {
 	s.mux.HandleFunc("GET /v1/acp/{serverId}/events", s.handleACPEvents)
 }
 
+// acpServerID extracts and validates the {serverId} path value. An invalid ID
+// writes the shared 400 problem and returns false.
+func (s *Server) acpServerID(w http.ResponseWriter, r *http.Request) (string, bool) {
+	serverID := r.PathValue("serverId")
+	if !validServerID(serverID) {
+		writeProblem(w, http.StatusBadRequest, "invalid ACP server ID")
+		return "", false
+	}
+	return serverID, true
+}
+
 // handleACPSSE negotiates Accept, validates Last-Event-ID, subscribes before
 // the first durable query, and frames the subscription as Server-Sent Events.
 // It ends on request cancellation, subscription closure, or write failure.
 func (s *Server) handleACPSSE(w http.ResponseWriter, r *http.Request) {
-	serverID := r.PathValue("serverId")
-	if !validServerID(serverID) {
-		writeProblem(w, http.StatusBadRequest, "invalid ACP server ID")
+	serverID, ok := s.acpServerID(w, r)
+	if !ok {
 		return
 	}
 	if !acceptsEventStream(w, r) {
@@ -118,7 +125,7 @@ func (s *Server) handleACPSSE(w http.ResponseWriter, r *http.Request) {
 	// and never a half-open stream.
 	sub, err := subscriber.Subscribe(r.Context(), serverID, after)
 	if err != nil {
-		WriteProblem(w, s.mapACPError(serverID, err))
+		s.writeACPError(w, serverID, err)
 		return
 	}
 	defer sub.Close()
@@ -184,9 +191,8 @@ func (s *Server) handleACPSSE(w http.ResponseWriter, r *http.Request) {
 // handleACPDelete terminates and prunes one server, reusing the shared
 // server-ID validation and problem mapping.
 func (s *Server) handleACPDelete(w http.ResponseWriter, r *http.Request) {
-	serverID := r.PathValue("serverId")
-	if !validServerID(serverID) {
-		writeProblem(w, http.StatusBadRequest, "invalid ACP server ID")
+	serverID, ok := s.acpServerID(w, r)
+	if !ok {
 		return
 	}
 	deleter, ok := s.deps.ACP.(ACPDeleter)
@@ -288,7 +294,7 @@ func parseAcceptRange(part string) (string, bool) {
 // durable prune can be retried.
 func writeDeleteProblem(w http.ResponseWriter, err error) {
 	if errors.Is(err, acpstore.ErrNotFound) {
-		writeProblem(w, http.StatusNotFound, "not found")
+		writeProblem(w, http.StatusNotFound, detailNotFound)
 		return
 	}
 	writeProblem(w, http.StatusInternalServerError, "ACP delete failure")
@@ -297,9 +303,8 @@ func writeDeleteProblem(w http.ResponseWriter, err error) {
 // handleACPPost negotiates, validates, and dispatches one client envelope. All
 // validation happens before any runtime is created or admitted.
 func (s *Server) handleACPPost(w http.ResponseWriter, r *http.Request) {
-	serverID := r.PathValue("serverId")
-	if !validServerID(serverID) {
-		writeProblem(w, http.StatusBadRequest, "invalid ACP server ID")
+	serverID, ok := s.acpServerID(w, r)
+	if !ok {
 		return
 	}
 	if !requireJSONContentType(w, r) {
@@ -324,7 +329,7 @@ func (s *Server) handleACPPost(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.deps.ACP.Post(r.Context(), serverID, agent, method, payload)
 	if err != nil {
-		WriteProblem(w, s.mapACPError(serverID, err))
+		s.writeACPError(w, serverID, err)
 		return
 	}
 	if result.Accepted {
@@ -400,7 +405,7 @@ func acceptsJSONResponse(w http.ResponseWriter, r *http.Request) bool {
 // policy. The raw object is never compacted or re-marshalled here.
 func (s *Server) decodeACPEnvelope(w http.ResponseWriter, r *http.Request) (json.RawMessage, string, bool) {
 	var payload json.RawMessage
-	if !DecodeJSON(w, r, maxACPBodyBytes, &payload) {
+	if !decodeJSONRequest(w, r, maxJSONBodyBytes, &payload) {
 		return nil, "", false
 	}
 	if _, _, err := acpruntime.ClassifyClientEnvelope(payload); err != nil {
@@ -418,37 +423,32 @@ func (s *Server) decodeACPEnvelope(w http.ResponseWriter, r *http.Request) (json
 // agent; a malformed query, or an empty, repeated, or unknown value is
 // rejected.
 func parseAgentQuery(r *http.Request) (*string, bool) {
-	values, err := url.ParseQuery(r.URL.RawQuery)
+	values, err := parseQuery(r, "agent")
 	if err != nil {
 		return nil, false
 	}
-	// Only the documented `agent` key is allowed; every other key is 400.
-	for key := range values {
-		if key != "agent" {
-			return nil, false
-		}
-	}
-	agents, present := values["agent"]
-	if !present {
+	if !values.Has("agent") {
 		return nil, true
 	}
-	if len(agents) != 1 || agents[0] == "" {
+	agent, ok := singleQuery(values, "agent")
+	if !ok {
 		return nil, false
 	}
-	if _, known := knownACPAgents[agents[0]]; !known {
+	if _, known := knownACPAgents[agent]; !known {
 		return nil, false
 	}
-	agent := agents[0]
 	return &agent, true
 }
 
-// mapACPError maps a typed Phase 02/acpproxy error to an RFC 9457 problem. Only
-// known sentinels are interpreted; anything else is a 502 process failure.
-func (s *Server) mapACPError(serverID string, err error) Problem {
+// writeACPError maps a typed Phase 02/acpproxy error to an RFC 9457 problem.
+// Only known sentinels are interpreted; anything else is a 502 process failure.
+// A 502 carries the already capped and redacted agent stderr tail, when
+// available, as an extension member.
+func (s *Server) writeACPError(w http.ResponseWriter, serverID string, err error) {
 	status, detail := http.StatusBadGateway, "ACP agent process failure"
 	switch {
 	case errors.Is(err, acpstore.ErrNotFound):
-		status, detail = http.StatusNotFound, "not found"
+		status, detail = http.StatusNotFound, detailNotFound
 	case errors.Is(err, acpruntime.ErrInvalidEnvelope):
 		status, detail = http.StatusBadRequest, "invalid ACP envelope"
 	case errors.Is(err, acpproxy.ErrMissingAgent):
@@ -471,30 +471,15 @@ func (s *Server) mapACPError(serverID string, err error) Problem {
 		status, detail = http.StatusInsufficientStorage, "ACP persistence failure"
 	}
 
-	problem := Problem{
-		Type:   "about:blank",
-		Title:  http.StatusText(status),
-		Status: status,
-		Detail: detail,
-	}
 	if status == http.StatusBadGateway {
 		if provider, ok := s.deps.ACP.(acpStderrProvider); ok {
 			if stderr := provider.Stderr(serverID); stderr != "" {
-				problem.Ext = map[string]any{"agentStderr": stderr}
+				writeProblemExt(w, status, detail, map[string]any{"agentStderr": stderr})
+				return
 			}
 		}
 	}
-	return problem
-}
-
-// writeProblem emits a status/detail problem response.
-func writeProblem(w http.ResponseWriter, status int, detail string) {
-	WriteProblem(w, Problem{
-		Type:   "about:blank",
-		Title:  http.StatusText(status),
-		Status: status,
-		Detail: detail,
-	})
+	writeProblem(w, status, detail)
 }
 
 // Event query policy: the documented defaults and bounds.
@@ -571,9 +556,8 @@ func (s *Server) handleACPList(w http.ResponseWriter, r *http.Request) {
 // handleACPStatus returns one server's durable status plus a PID only while the
 // proxy still owns the current live generation.
 func (s *Server) handleACPStatus(w http.ResponseWriter, r *http.Request) {
-	serverID := r.PathValue("serverId")
-	if !validServerID(serverID) {
-		writeProblem(w, http.StatusBadRequest, "invalid ACP server ID")
+	serverID, ok := s.acpServerID(w, r)
+	if !ok {
 		return
 	}
 	if s.deps.ACPStore == nil {
@@ -614,12 +598,11 @@ func (s *Server) handleACPStatus(w http.ResponseWriter, r *http.Request) {
 // handleACPEvents returns durable events after an exclusive sequence, filtered
 // and ordered by the strictly parsed query.
 func (s *Server) handleACPEvents(w http.ResponseWriter, r *http.Request) {
-	serverID := r.PathValue("serverId")
-	if !validServerID(serverID) {
-		writeProblem(w, http.StatusBadRequest, "invalid ACP server ID")
+	serverID, ok := s.acpServerID(w, r)
+	if !ok {
 		return
 	}
-	values, err := url.ParseQuery(r.URL.RawQuery)
+	values, err := parseQuery(r, "sessionId", "after", "limit", "order")
 	if err != nil {
 		writeProblem(w, http.StatusBadRequest, "invalid ACP event query")
 		return
@@ -655,50 +638,38 @@ func (s *Server) handleACPEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 // parseEventQuery strictly parses sessionId, after, limit, and order. Every key
-// is single-valued and non-empty; unknown keys, signs, non-decimals, overflow,
-// limit outside 1..1000, unknown order values, and session IDs over 1024 bytes
-// are rejected.
+// is single-valued and non-empty; signs, non-decimals, overflow, limit outside
+// 1..1000, unknown order values, and session IDs over 1024 bytes are rejected.
+// Unknown keys are rejected by parseQuery before this runs.
 func parseEventQuery(values url.Values) (acpstore.EventQuery, error) {
-	for key := range values {
-		switch key {
-		case "sessionId", "after", "limit", "order":
-		default:
+	query := acpstore.EventQuery{Limit: defaultEventLimit}
+	if values.Has("after") {
+		raw, ok := singleQuery(values, "after")
+		if !ok {
 			return acpstore.EventQuery{}, errInvalidEventQuery
 		}
-	}
-	single := func(key string) (string, bool, error) {
-		value, present := values[key]
-		if !present {
-			return "", false, nil
-		}
-		if len(value) != 1 || value[0] == "" {
-			return "", false, errInvalidEventQuery
-		}
-		return value[0], true, nil
-	}
-
-	query := acpstore.EventQuery{Limit: defaultEventLimit}
-	if raw, present, err := single("after"); err != nil {
-		return acpstore.EventQuery{}, err
-	} else if present {
 		after, err := parseNonnegativeInt64(raw)
 		if err != nil {
 			return acpstore.EventQuery{}, err
 		}
 		query.After = after
 	}
-	if raw, present, err := single("limit"); err != nil {
-		return acpstore.EventQuery{}, err
-	} else if present {
+	if values.Has("limit") {
+		raw, ok := singleQuery(values, "limit")
+		if !ok {
+			return acpstore.EventQuery{}, errInvalidEventQuery
+		}
 		limit, err := parseNonnegativeInt64(raw)
 		if err != nil || limit < 1 || limit > maxEventLimit {
 			return acpstore.EventQuery{}, errInvalidEventQuery
 		}
 		query.Limit = int(limit)
 	}
-	if raw, present, err := single("order"); err != nil {
-		return acpstore.EventQuery{}, err
-	} else if present {
+	if values.Has("order") {
+		raw, ok := singleQuery(values, "order")
+		if !ok {
+			return acpstore.EventQuery{}, errInvalidEventQuery
+		}
 		switch raw {
 		case "asc":
 		case "desc":
@@ -707,9 +678,11 @@ func parseEventQuery(values url.Values) (acpstore.EventQuery, error) {
 			return acpstore.EventQuery{}, errInvalidEventQuery
 		}
 	}
-	if raw, present, err := single("sessionId"); err != nil {
-		return acpstore.EventQuery{}, err
-	} else if present {
+	if values.Has("sessionId") {
+		raw, ok := singleQuery(values, "sessionId")
+		if !ok {
+			return acpstore.EventQuery{}, errInvalidEventQuery
+		}
 		if len(raw) > maxSessionIDBytes {
 			return acpstore.EventQuery{}, errInvalidEventQuery
 		}
@@ -737,7 +710,7 @@ func parseNonnegativeInt64(value string) (int64, error) {
 // writeStoreReadProblem maps a durable read failure to a problem response.
 func writeStoreReadProblem(w http.ResponseWriter, err error) {
 	if errors.Is(err, acpstore.ErrNotFound) {
-		writeProblem(w, http.StatusNotFound, "not found")
+		writeProblem(w, http.StatusNotFound, detailNotFound)
 		return
 	}
 	writeProblem(w, http.StatusInternalServerError, "ACP store failure")

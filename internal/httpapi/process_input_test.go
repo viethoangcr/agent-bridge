@@ -95,8 +95,8 @@ func TestProcessInputEncodedLimitProductionBoundary(t *testing.T) {
 	if got, want := inputEncodedBodyLimit(productionMaxInput), int64(9787736); got != want {
 		t.Fatalf("inputEncodedBodyLimit(%d) = %d, want %d", productionMaxInput, got, want)
 	}
-	if got := inputEncodedBodyLimit(productionMaxInput); got > maxProcessJSONBytes {
-		t.Fatalf("encoded limit %d exceeds global ceiling %d", got, maxProcessJSONBytes)
+	if got := inputEncodedBodyLimit(productionMaxInput); got > maxJSONBodyBytes {
+		t.Fatalf("encoded limit %d exceeds global ceiling %d", got, maxJSONBodyBytes)
 	}
 }
 

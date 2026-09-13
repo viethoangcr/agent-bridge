@@ -4,15 +4,10 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"net/url"
 	"strconv"
 
 	"github.com/viethoangcr/agent-bridge/internal/filesystem"
 )
-
-// maxFilesystemJSONBytes is the shared 10MiB JSON body ceiling for filesystem
-// JSON requests.
-const maxFilesystemJSONBytes = 10 << 20
 
 // maxFSFileBytes and maxFSUploadBytes are the production 512MiB raw file PUT
 // and upload limits. Server copies them into overridable fields so tests can
@@ -26,6 +21,10 @@ const (
 // body reader returns it at limit+1 so a mutation is aborted before it can
 // touch the destination.
 var errFSBodyTooLarge = errors.New("filesystem request body too large")
+
+// detailInvalidFilesystemQuery is the canonical 400 detail for a malformed
+// filesystem query.
+const detailInvalidFilesystemQuery = "invalid filesystem query"
 
 // fsMkdirRequest is the exact `{directory,name}` mkdir body.
 type fsMkdirRequest struct {
@@ -68,24 +67,19 @@ func (s *Server) requireFilesystem(w http.ResponseWriter) bool {
 // false. Raw parsing is used so a malformed escape is rejected rather than
 // silently dropped with its key.
 func fsRequiredQuery(w http.ResponseWriter, r *http.Request, required string, optional ...string) (map[string]string, bool) {
-	allowed := make(map[string]struct{}, len(optional)+1)
-	allowed[required] = struct{}{}
-	for _, key := range optional {
-		allowed[key] = struct{}{}
-	}
-	values, err := url.ParseQuery(r.URL.RawQuery)
+	values, err := parseQuery(r, append([]string{required}, optional...)...)
 	if err != nil {
-		writeProblem(w, http.StatusBadRequest, "invalid filesystem query")
+		writeProblem(w, http.StatusBadRequest, detailInvalidFilesystemQuery)
 		return nil, false
 	}
-	for key, list := range values {
-		if _, ok := allowed[key]; !ok || len(list) != 1 || list[0] == "" {
-			writeProblem(w, http.StatusBadRequest, "invalid filesystem query")
+	for _, list := range values {
+		if len(list) != 1 || list[0] == "" {
+			writeProblem(w, http.StatusBadRequest, detailInvalidFilesystemQuery)
 			return nil, false
 		}
 	}
 	if _, present := values[required]; !present {
-		writeProblem(w, http.StatusBadRequest, "invalid filesystem query")
+		writeProblem(w, http.StatusBadRequest, detailInvalidFilesystemQuery)
 		return nil, false
 	}
 	out := make(map[string]string, len(values))
@@ -93,15 +87,6 @@ func fsRequiredQuery(w http.ResponseWriter, r *http.Request, required string, op
 		out[key] = list[0]
 	}
 	return out, true
-}
-
-// requireNoFSQuery rejects any query string on endpoints that document none.
-func requireNoFSQuery(w http.ResponseWriter, r *http.Request) bool {
-	if r.URL.RawQuery != "" {
-		writeProblem(w, http.StatusBadRequest, "invalid filesystem query")
-		return false
-	}
-	return true
 }
 
 // fsBodyCounter bounds a request body to limit bytes. It returns
@@ -192,7 +177,7 @@ func (s *Server) handleFSFile(w http.ResponseWriter, r *http.Request) {
 		counter := limitFSBody(w, r, s.fsFileLimit)
 		result, err := s.deps.Files.WriteFile(query["path"], counter)
 		if counter.exceeded() {
-			writeProblem(w, http.StatusRequestEntityTooLarge, "request body too large")
+			writeProblem(w, http.StatusRequestEntityTooLarge, detailBodyTooLarge)
 			return
 		}
 		if err != nil {
@@ -226,14 +211,11 @@ func (s *Server) handleFSMkdir(w http.ResponseWriter, r *http.Request) {
 	if !s.requireFilesystem(w) {
 		return
 	}
-	if !requireNoFSQuery(w, r) {
-		return
-	}
-	if !requireJSONContentType(w, r) {
+	if !requireNoQuery(w, r, detailInvalidFilesystemQuery) {
 		return
 	}
 	var req fsMkdirRequest
-	if !DecodeJSON(w, r, maxFilesystemJSONBytes, &req) {
+	if !decodeJSONRequest(w, r, maxJSONBodyBytes, &req) {
 		return
 	}
 	result, err := s.deps.Files.Mkdir(req.Directory, req.Name)
@@ -249,14 +231,11 @@ func (s *Server) handleFSMove(w http.ResponseWriter, r *http.Request) {
 	if !s.requireFilesystem(w) {
 		return
 	}
-	if !requireNoFSQuery(w, r) {
-		return
-	}
-	if !requireJSONContentType(w, r) {
+	if !requireNoQuery(w, r, detailInvalidFilesystemQuery) {
 		return
 	}
 	var req fsMoveRequest
-	if !DecodeJSON(w, r, maxFilesystemJSONBytes, &req) {
+	if !decodeJSONRequest(w, r, maxJSONBodyBytes, &req) {
 		return
 	}
 	result, err := s.deps.Files.Move(req.Source, req.Destination)
@@ -298,7 +277,7 @@ func (s *Server) handleFSUploadBatch(w http.ResponseWriter, r *http.Request) {
 	counter := limitFSBody(w, r, s.fsUploadLimit)
 	files, err := s.deps.Files.Upload(query["directory"], counter)
 	if counter.exceeded() {
-		writeProblem(w, http.StatusRequestEntityTooLarge, "request body too large")
+		writeProblem(w, http.StatusRequestEntityTooLarge, detailBodyTooLarge)
 		return
 	}
 	if err != nil {
@@ -321,11 +300,11 @@ func writeFilesystemError(w http.ResponseWriter, err error) {
 		case filesystem.ErrorKindInvalid:
 			status, detail = http.StatusBadRequest, "invalid filesystem request"
 		case filesystem.ErrorKindNotFound:
-			status, detail = http.StatusNotFound, "not found"
+			status, detail = http.StatusNotFound, detailNotFound
 		case filesystem.ErrorKindConflict:
 			status, detail = http.StatusConflict, "destination conflict"
 		case filesystem.ErrorKindTooLarge:
-			status, detail = http.StatusRequestEntityTooLarge, "request body too large"
+			status, detail = http.StatusRequestEntityTooLarge, detailBodyTooLarge
 		}
 	}
 	writeProblem(w, status, detail)

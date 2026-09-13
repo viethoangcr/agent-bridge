@@ -9,13 +9,13 @@ import (
 	"github.com/viethoangcr/agent-bridge/internal/process"
 )
 
-// maxProcessJSONBytes is the master global JSON hard ceiling: 10MiB. Every
-// process JSON body is bounded by it before decoding.
-const maxProcessJSONBytes = 10 << 20
-
 // processInputEnvelopeBytes is the fixed allowance that covers the exact
 // compact `{data,encoding}` input envelope around the base64 expansion.
 const processInputEnvelopeBytes = 1024
+
+// detailInvalidProcessQuery is the canonical 400 detail for a malformed process
+// query.
+const detailInvalidProcessQuery = "invalid process query"
 
 // errInvalidProcessQuery marks a malformed process query so the caller answers
 // with a 400 problem.
@@ -64,16 +64,6 @@ func (s *Server) handleReservedProcessLiteral(w http.ResponseWriter, r *http.Req
 	s.methodNotAllowed(w, methods)
 }
 
-// requireNoProcessQuery rejects any query string on endpoints that document no
-// query parameters, using the same invalid-query 400 as the logs parser.
-func requireNoProcessQuery(w http.ResponseWriter, r *http.Request) bool {
-	if r.URL.RawQuery != "" {
-		writeProblem(w, http.StatusBadRequest, "invalid process query")
-		return false
-	}
-	return true
-}
-
 // processInputRequest is the exact `{data,encoding}` input envelope. Encoding
 // must be exactly base64 or utf8; data is the encoded payload.
 type processInputRequest struct {
@@ -93,14 +83,14 @@ func (s *Server) requireProcessManager(w http.ResponseWriter) bool {
 // handleProcessStart validates the start body, spawns the process group, and
 // returns the running snapshot itself with no wrapper.
 func (s *Server) handleProcessStart(w http.ResponseWriter, r *http.Request) {
-	if !requireNoProcessQuery(w, r) {
+	if !requireNoQuery(w, r, detailInvalidProcessQuery) {
 		return
 	}
 	if !s.requireProcessManager(w) {
 		return
 	}
 	var req process.StartRequest
-	if !decodeProcessJSON(w, r, maxProcessJSONBytes, &req) {
+	if !decodeJSONRequest(w, r, maxJSONBodyBytes, &req) {
 		return
 	}
 	snapshot, err := s.deps.Processes.Start(req)
@@ -117,14 +107,14 @@ func (s *Server) handleProcessStart(w http.ResponseWriter, r *http.Request) {
 // {exitCode?,timedOut,stdout,stderr,stdoutTruncated,stderrTruncated,durationMs}
 // members via process.RunResult.
 func (s *Server) handleProcessRun(w http.ResponseWriter, r *http.Request) {
-	if !requireNoProcessQuery(w, r) {
+	if !requireNoQuery(w, r, detailInvalidProcessQuery) {
 		return
 	}
 	if !s.requireProcessManager(w) {
 		return
 	}
 	var req process.RunRequest
-	if !decodeProcessJSON(w, r, maxProcessJSONBytes, &req) {
+	if !decodeJSONRequest(w, r, maxJSONBodyBytes, &req) {
 		return
 	}
 	result, err := s.deps.Processes.Run(r.Context(), req)
@@ -138,7 +128,7 @@ func (s *Server) handleProcessRun(w http.ResponseWriter, r *http.Request) {
 // handleProcessList returns every retained snapshot wrapped in `processes` and
 // sorted by ID.
 func (s *Server) handleProcessList(w http.ResponseWriter, r *http.Request) {
-	if !requireNoProcessQuery(w, r) {
+	if !requireNoQuery(w, r, detailInvalidProcessQuery) {
 		return
 	}
 	if !s.requireProcessManager(w) {
@@ -151,7 +141,7 @@ func (s *Server) handleProcessList(w http.ResponseWriter, r *http.Request) {
 
 // handleProcessGet returns one snapshot itself or 404 for an unknown ID.
 func (s *Server) handleProcessGet(w http.ResponseWriter, r *http.Request) {
-	if !requireNoProcessQuery(w, r) {
+	if !requireNoQuery(w, r, detailInvalidProcessQuery) {
 		return
 	}
 	if !s.requireProcessManager(w) {
@@ -168,7 +158,7 @@ func (s *Server) handleProcessGet(w http.ResponseWriter, r *http.Request) {
 // handleProcessStop sends SIGTERM to the process group, waits the fixed bound,
 // and returns the resulting snapshot.
 func (s *Server) handleProcessStop(w http.ResponseWriter, r *http.Request) {
-	if !requireNoProcessQuery(w, r) {
+	if !requireNoQuery(w, r, detailInvalidProcessQuery) {
 		return
 	}
 	if !s.requireProcessManager(w) {
@@ -185,7 +175,7 @@ func (s *Server) handleProcessStop(w http.ResponseWriter, r *http.Request) {
 // handleProcessKill sends SIGKILL to the process group, waits the fixed bound,
 // and returns the resulting snapshot.
 func (s *Server) handleProcessKill(w http.ResponseWriter, r *http.Request) {
-	if !requireNoProcessQuery(w, r) {
+	if !requireNoQuery(w, r, detailInvalidProcessQuery) {
 		return
 	}
 	if !s.requireProcessManager(w) {
@@ -202,7 +192,7 @@ func (s *Server) handleProcessKill(w http.ResponseWriter, r *http.Request) {
 // handleProcessDelete removes an exited record and returns 204 empty. A running
 // process is a 409 and an unknown ID is a 404.
 func (s *Server) handleProcessDelete(w http.ResponseWriter, r *http.Request) {
-	if !requireNoProcessQuery(w, r) {
+	if !requireNoQuery(w, r, detailInvalidProcessQuery) {
 		return
 	}
 	if !s.requireProcessManager(w) {
@@ -221,14 +211,14 @@ func (s *Server) handleProcessLogs(w http.ResponseWriter, r *http.Request) {
 	if !s.requireProcessManager(w) {
 		return
 	}
-	values, err := url.ParseQuery(r.URL.RawQuery)
+	values, err := parseQuery(r, "stream", "tail", "since")
 	if err != nil {
-		writeProblem(w, http.StatusBadRequest, "invalid process query")
+		writeProblem(w, http.StatusBadRequest, detailInvalidProcessQuery)
 		return
 	}
 	query, err := parseLogsQuery(values)
 	if err != nil {
-		writeProblem(w, http.StatusBadRequest, "invalid process query")
+		writeProblem(w, http.StatusBadRequest, detailInvalidProcessQuery)
 		return
 	}
 	entries, err := s.deps.Processes.Logs(r.PathValue("id"), query)
@@ -245,7 +235,7 @@ func (s *Server) handleProcessLogs(w http.ResponseWriter, r *http.Request) {
 // active decoded-byte limit, writes to the process stdin, and returns the
 // written byte count. The body is bounded by the active encoded ceiling.
 func (s *Server) handleProcessInput(w http.ResponseWriter, r *http.Request) {
-	if !requireNoProcessQuery(w, r) {
+	if !requireNoQuery(w, r, detailInvalidProcessQuery) {
 		return
 	}
 	if !s.requireProcessManager(w) {
@@ -253,7 +243,7 @@ func (s *Server) handleProcessInput(w http.ResponseWriter, r *http.Request) {
 	}
 	var req processInputRequest
 	active := s.deps.Processes.Config().MaxInputBytesPerRequest
-	if !decodeProcessJSON(w, r, inputEncodedBodyLimit(active), &req) {
+	if !decodeJSONRequest(w, r, inputEncodedBodyLimit(active), &req) {
 		return
 	}
 	decoded, err := process.DecodeInput(req.Encoding, []byte(req.Data))
@@ -276,7 +266,7 @@ func (s *Server) handleProcessInput(w http.ResponseWriter, r *http.Request) {
 // validates it, and replaces the active configuration atomically. A rejected
 // POST leaves the previous configuration untouched.
 func (s *Server) handleProcessConfig(w http.ResponseWriter, r *http.Request) {
-	if !requireNoProcessQuery(w, r) {
+	if !requireNoQuery(w, r, detailInvalidProcessQuery) {
 		return
 	}
 	if s.deps.Processes == nil {
@@ -288,7 +278,7 @@ func (s *Server) handleProcessConfig(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, s.deps.Processes.Config())
 	case http.MethodPost:
 		var cfg process.Config
-		if !decodeProcessJSON(w, r, maxProcessJSONBytes, &cfg) {
+		if !decodeJSONRequest(w, r, maxJSONBodyBytes, &cfg) {
 			return
 		}
 		if err := s.deps.Processes.UpdateConfig(cfg); err != nil {
@@ -301,48 +291,19 @@ func (s *Server) handleProcessConfig(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// decodeProcessJSON enforces the public JSON contract shared by every process
-// endpoint: a parseable application/json Content-Type, an allowlisted set of
-// fields, exactly one JSON value, and the supplied byte ceiling. Unknown
-// fields, trailing values, malformed bodies, and wrong types are 400; an
-// over-limit body is 413; a missing or non-JSON Content-Type is 415.
-func decodeProcessJSON(w http.ResponseWriter, r *http.Request, limit int64, dst any) bool {
-	if !requireJSONContentType(w, r) {
-		return false
-	}
-	return DecodeJSON(w, r, limit, dst)
-}
-
 // parseLogsQuery strictly parses the logs query. stream, tail, and since are
 // allowlisted; every key may appear at most once and with a non-empty value.
 // tail and since are strict non-negative decimals; stream is
-// stdout|stderr|combined. Unknown, repeated, empty, or malformed values are
-// errInvalidProcessQuery. A present tail of zero is preserved distinctly from
-// an omitted tail.
+// stdout|stderr|combined. Repeated, empty, or malformed values are
+// errInvalidProcessQuery; unknown keys are rejected by parseQuery first. A
+// present tail of zero is preserved distinctly from an omitted tail.
 func parseLogsQuery(values url.Values) (process.LogQuery, error) {
-	for key := range values {
-		switch key {
-		case "stream", "tail", "since":
-		default:
+	var query process.LogQuery
+	if values.Has("stream") {
+		raw, ok := singleQuery(values, "stream")
+		if !ok {
 			return process.LogQuery{}, errInvalidProcessQuery
 		}
-	}
-
-	single := func(key string) (string, bool, error) {
-		value, present := values[key]
-		if !present {
-			return "", false, nil
-		}
-		if len(value) != 1 || value[0] == "" {
-			return "", false, errInvalidProcessQuery
-		}
-		return value[0], true, nil
-	}
-
-	var query process.LogQuery
-	if raw, present, err := single("stream"); err != nil {
-		return process.LogQuery{}, err
-	} else if present {
 		switch raw {
 		case "stdout", "stderr", "combined":
 			query.Stream = raw
@@ -350,18 +311,22 @@ func parseLogsQuery(values url.Values) (process.LogQuery, error) {
 			return process.LogQuery{}, errInvalidProcessQuery
 		}
 	}
-	if raw, present, err := single("since"); err != nil {
-		return process.LogQuery{}, err
-	} else if present {
+	if values.Has("since") {
+		raw, ok := singleQuery(values, "since")
+		if !ok {
+			return process.LogQuery{}, errInvalidProcessQuery
+		}
 		since, err := parseNonnegativeInt64(raw)
 		if err != nil {
 			return process.LogQuery{}, errInvalidProcessQuery
 		}
 		query.Since = since
 	}
-	if raw, present, err := single("tail"); err != nil {
-		return process.LogQuery{}, err
-	} else if present {
+	if values.Has("tail") {
+		raw, ok := singleQuery(values, "tail")
+		if !ok {
+			return process.LogQuery{}, errInvalidProcessQuery
+		}
 		tail, err := parseNonnegativeInt64(raw)
 		if err != nil || tail > int64(math.MaxInt) {
 			return process.LogQuery{}, errInvalidProcessQuery
@@ -387,11 +352,11 @@ func inputEncodedBodyLimit(activeDecoded int) int64 {
 		blocks++
 	}
 	if blocks > (math.MaxInt-processInputEnvelopeBytes)/4 {
-		return maxProcessJSONBytes
+		return maxJSONBodyBytes
 	}
 	limit := blocks*4 + processInputEnvelopeBytes
-	if limit > maxProcessJSONBytes {
-		return maxProcessJSONBytes
+	if int64(limit) > maxJSONBodyBytes {
+		return maxJSONBodyBytes
 	}
 	return int64(limit)
 }
@@ -408,14 +373,9 @@ func mapProcessError(err error) Problem {
 	case errors.Is(err, process.ErrPayloadTooLarge):
 		status, detail = http.StatusRequestEntityTooLarge, "process payload too large"
 	case errors.Is(err, process.ErrNotFound):
-		status, detail = http.StatusNotFound, "not found"
+		status, detail = http.StatusNotFound, detailNotFound
 	case errors.Is(err, process.ErrConflict), errors.Is(err, process.ErrCapacity):
 		status, detail = http.StatusConflict, "process conflict"
 	}
-	return Problem{
-		Type:   "about:blank",
-		Title:  http.StatusText(status),
-		Status: status,
-		Detail: detail,
-	}
+	return newProblem(status, detail)
 }
