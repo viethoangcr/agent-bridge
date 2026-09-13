@@ -14,7 +14,7 @@ func (p *Proxy) LivePID(serverID string) (int, bool) {
 	if p.lookupLive(serverID) != inst || inst.runtime == nil {
 		return 0, false
 	}
-	if inst.terminating || inst.deleting || inst.detached || inst.closed {
+	if inst.gated() {
 		return 0, false
 	}
 	return inst.runtime.PID(), true

@@ -72,8 +72,7 @@ func (p *Proxy) acquireForPost(ctx context.Context, lk *lifecycleLock, serverID 
 			// the instance without setting the terminal flags, so the existing
 			// retry/reinitialize path is preserved.
 			lk.mu.Lock()
-			if p.lookupLive(serverID) == placeholder && !placeholder.creating &&
-				!placeholder.terminating && !placeholder.deleting && !placeholder.detached && !placeholder.closed {
+			if p.lookupLive(serverID) == placeholder && !placeholder.creating && !placeholder.gated() {
 				if err := placeholder.acquireActivity(); err != nil {
 					lk.mu.Unlock()
 					return nil, err
@@ -81,7 +80,7 @@ func (p *Proxy) acquireForPost(ctx context.Context, lk *lifecycleLock, serverID 
 				lk.mu.Unlock()
 				return placeholder, nil
 			}
-			gated := placeholder.terminating || placeholder.deleting || placeholder.detached || placeholder.closed
+			gated := placeholder.gated()
 			lk.mu.Unlock()
 			if gated {
 				return nil, ErrDeleting
@@ -98,7 +97,7 @@ func (p *Proxy) acquireForPost(ctx context.Context, lk *lifecycleLock, serverID 
 			}
 			return current, nil
 		}
-		if live.terminating || live.deleting || live.detached || live.closed {
+		if live.gated() {
 			lk.mu.Unlock()
 			return nil, ErrDeleting
 		}
@@ -133,8 +132,7 @@ func (p *Proxy) awaitCreating(ctx context.Context, lk *lifecycleLock, serverID s
 	}
 	lk.mu.Lock()
 	current := p.lookupLive(serverID)
-	if current != nil && !current.creating &&
-		!current.terminating && !current.deleting && !current.detached && !current.closed {
+	if current != nil && !current.creating && !current.gated() {
 		// Re-check the requested agent in the same critical section as
 		// the lease so a waiter for a different agent can never be
 		// dispatched to the instance the creation just published.
@@ -149,19 +147,19 @@ func (p *Proxy) awaitCreating(ctx context.Context, lk *lifecycleLock, serverID s
 		lk.mu.Unlock()
 		return current, false, nil
 	}
-	gated := placeholder.terminating || placeholder.deleting || placeholder.detached || placeholder.closed
+	gated := placeholder.gated()
 	createErr := placeholder.createErr
 	lk.mu.Unlock()
+	// A recorded abandonment error is the creator's outcome; it wins over the
+	// gate state so every waiter observes the same cause as the creator.
+	if current == nil && createErr != nil {
+		return nil, false, createErr
+	}
 	// A DELETE that gated the placeholder while this waiter slept wins:
 	// never recreate a server the DELETE just pruned, even after the
 	// global deleting gate cleared.
 	if gated {
 		return nil, false, ErrDeleting
-	}
-	// A published replacement wins; otherwise the waiter inherits the
-	// failed creation's error instead of retrying it.
-	if current == nil && createErr != nil {
-		return nil, false, createErr
 	}
 	return nil, true, nil
 }
@@ -250,7 +248,7 @@ func (p *Proxy) create(ctx context.Context, lk *lifecycleLock, inst *instance, s
 func (p *Proxy) publishCreate(ctx context.Context, inst *instance, serverID string, rt runtime, agent string) error {
 	lk := inst.lock
 	lk.mu.Lock()
-	if p.live[serverID] != inst || inst.terminating || inst.deleting || inst.detached || inst.closed || p.closed.Load() {
+	if p.live[serverID] != inst || inst.gated() || p.closed.Load() {
 		closed := p.closed.Load()
 		lk.mu.Unlock()
 		gateErr := ErrDeleting
@@ -281,16 +279,18 @@ func (p *Proxy) publishCreate(ctx context.Context, inst *instance, serverID stri
 // wakes its waiters, which inherit err. A spawn that could not be published is
 // killed first, outside every lock, so no process survives a delete or shutdown
 // that gated the placeholder mid-spawn. If that kill fails, the runtime stays
-// tracked and gated so DELETE, shutdown, or the reaper can retry terminating
-// it: its capacity stays consumed until it is confirmed gone.
+// tracked as a retained generation so DELETE, shutdown, or the idle reaper can
+// retry terminating it: its capacity stays consumed until it is confirmed gone.
+// It is marked terminating to gate activity but not deleting or detached, so
+// the reaper still considers it eligible.
 func (p *Proxy) abandonCreate(ctx context.Context, inst *instance, rt runtime, err error) error {
 	retained := rt != nil && p.killRuntime(context.WithoutCancel(ctx), inst, rt) != nil
 	lk := inst.lock
 	lk.mu.Lock()
 	if retained {
 		inst.runtime = rt
+		inst.retained = true
 		inst.terminating = true
-		inst.detached = true
 	} else {
 		p.dropLive(inst)
 	}

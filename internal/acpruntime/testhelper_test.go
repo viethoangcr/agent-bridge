@@ -158,6 +158,12 @@ func newRuntimeStore(t *testing.T) *acpstore.Store {
 // startHelperRuntime starts a runtime running the test binary in mode with a
 // pid file. A bounded cleanup always terminates any reported PIDs.
 func startHelperRuntime(t *testing.T, mode string, timeout time.Duration) (*Runtime, *acpstore.Store, string) {
+	return startHelperRuntimeHooked(t, mode, timeout, nil)
+}
+
+// startHelperRuntimeHooked is startHelperRuntime with the waiter's afterReap
+// test hook installed before the waiter goroutine launches.
+func startHelperRuntimeHooked(t *testing.T, mode string, timeout time.Duration, afterReap func()) (*Runtime, *acpstore.Store, string) {
 	t.Helper()
 	store := newRuntimeStore(t)
 	pidPath := filepath.Join(t.TempDir(), "helper-pids.json")
@@ -165,7 +171,7 @@ func startHelperRuntime(t *testing.T, mode string, timeout time.Duration) (*Runt
 	env = withEnv(env, helperPIDFileEnv, pidPath)
 	spec := LaunchSpec{Program: os.Args[0], Env: env}
 
-	r, err := Start(t.Context(), store, "srv", spec, timeout, testLogger())
+	r, err := start(t.Context(), store, "srv", spec, timeout, testLogger(), afterReap)
 	if err != nil {
 		t.Fatalf("Start(%s): %v", mode, err)
 	}
@@ -266,6 +272,16 @@ func waitGoneOrZombie(t *testing.T, pid int) {
 type nopWriteCloser struct{ *bytes.Buffer }
 
 func (nopWriteCloser) Close() error { return nil }
+
+// awaitSignal fails rather than hanging when an expected signal never arrives.
+func awaitSignal(t *testing.T, ch <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+	}
+}
 
 // concurrentKillers calls Kill from n goroutines and returns their errors.
 func concurrentKillers(ctx context.Context, r *Runtime, n int) []error {

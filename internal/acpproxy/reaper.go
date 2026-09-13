@@ -177,11 +177,17 @@ func (p *Proxy) reapInstance(ctx context.Context, inst *instance, now time.Time)
 }
 
 // reapEligibleLocked reports whether inst is the current live generation and
-// carries no gate of its own. The caller holds inst's lifecycle lock.
+// carries no terminating gate of its own. A retained placeholder is
+// deliberately reaper-eligible even though it is terminating: it exists only
+// because its teardown kill failed on an abandoned creation, so the reaper is
+// the path that releases its capacity when no DELETE or shutdown retries. The
+// caller holds inst's lifecycle lock.
 func (p *Proxy) reapEligibleLocked(inst *instance) bool {
 	current := p.lookupLive(inst.serverID)
-	return current == inst && !inst.terminating && !inst.deleting && !inst.detached &&
-		!inst.closed && !inst.creating
+	if current != inst || inst.creating || inst.closed || inst.deleting || inst.detached {
+		return false
+	}
+	return inst.retained || !inst.terminating
 }
 
 // reapGatedCurrentLocked reports whether a reaper-gated inst is still the

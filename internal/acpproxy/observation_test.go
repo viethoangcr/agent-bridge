@@ -38,6 +38,7 @@ func TestProxyLivePID(t *testing.T) {
 			{name: "terminating", set: func() { inst.terminating = true }, clear: func() { inst.terminating = false }},
 			{name: "deleting", set: func() { inst.deleting = true }, clear: func() { inst.deleting = false }},
 			{name: "detached", set: func() { inst.detached = true }, clear: func() { inst.detached = false }},
+			{name: "retained", set: func() { inst.retained = true }, clear: func() { inst.retained = false }},
 			{name: "closed", set: func() { inst.closed = true }, clear: func() { inst.closed = false }},
 		}
 		for _, gate := range gates {

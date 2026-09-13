@@ -14,10 +14,10 @@ type lifecycleLock struct {
 }
 
 // instance is one live runtime and its activity/gate state. activity,
-// generation, terminating, deleting, detached, closed, and zero are guarded by
-// the server's lifecycle lock. terminating/deleting/detached/closed plus
-// waitActivityZero are the gate/lease primitives the reaper, DELETE, and
-// shutdown drive.
+// generation, terminating, deleting, detached, retained, closed, and zero are
+// guarded by the server's lifecycle lock.
+// terminating/deleting/detached/retained/closed plus waitActivityZero are the
+// gate/lease primitives the reaper, DELETE, and shutdown drive.
 type instance struct {
 	serverID    string
 	agent       string
@@ -29,6 +29,12 @@ type instance struct {
 	deleting    bool
 	detached    bool
 	closed      bool
+
+	// retained marks a placeholder whose fresh runtime survived an abandoned
+	// creation because its teardown kill failed. It stays tracked and gated so
+	// the idle reaper, DELETE, or shutdown can retry terminating it, unlike the
+	// other gates it is deliberately reaper-eligible.
+	retained bool
 
 	// creating marks a placeholder reserved while its durable-row read,
 	// resolution, and spawn I/O are still in flight. ready closes when the
@@ -57,11 +63,17 @@ type instance struct {
 	subsClosed  bool
 }
 
+// gated reports whether the instance refuses new activity and cannot be
+// published as a live replacement. The caller holds the lifecycle lock.
+func (i *instance) gated() bool {
+	return i.terminating || i.deleting || i.detached || i.retained || i.closed
+}
+
 // acquireActivity registers one active lease. The caller holds the lifecycle
-// lock. It refuses leases once the instance is terminating, detached, or still
-// a creation placeholder without a runtime.
+// lock. It refuses leases once the instance is gated or still a creation
+// placeholder without a runtime.
 func (i *instance) acquireActivity() error {
-	if i.terminating || i.detached || i.creating {
+	if i.gated() || i.creating {
 		return ErrDeleting
 	}
 	if i.activity == 0 {

@@ -261,6 +261,109 @@ func TestCreateFinalizeLosesToDeleteMark(t *testing.T) {
 	}
 }
 
+// TestAwaitCreatingInheritsShutdownCreationError proves a waiter woken by a
+// creation abandoned during shutdown observes the creator's recorded cause
+// (ErrClosed), not the transient gated-state ErrDeleting.
+func TestAwaitCreatingInheritsShutdownCreationError(t *testing.T) {
+	f := newTestFactory(t)
+	p, _ := newProxyForTest(t, f)
+	ctx := t.Context()
+	id := "shutdown-waiter-error"
+	agent := "alpha"
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	realServer := p.storeServer
+	p.storeServer = func(ctx context.Context, serverID string) (acpstore.Server, error) {
+		close(entered)
+		<-release
+		return realServer(ctx, serverID)
+	}
+
+	creatorErr := make(chan error, 1)
+	go func() {
+		_, err := p.Post(ctx, id, &agent, "initialize", initPayload)
+		creatorErr <- err
+	}()
+	awaitSignal(t, entered, "creation store read")
+
+	waiterArrived := make(chan struct{}, 1)
+	p.beforeCreateWait = func() { waiterArrived <- struct{}{} }
+	waiterErr := make(chan error, 1)
+	go func() {
+		_, err := p.Post(ctx, id, nil, "initialize", initPayload)
+		waiterErr <- err
+	}()
+	awaitSignal(t, waiterArrived, "waiter arrival")
+
+	shutdownDone := make(chan error, 1)
+	go func() { shutdownDone <- p.Shutdown(ctx) }()
+	waitFor(t, p.closed.Load)
+	close(release)
+
+	creator := <-creatorErr
+	waiter := <-waiterErr
+	if !errors.Is(creator, ErrClosed) {
+		t.Fatalf("creator error = %v, want ErrClosed", creator)
+	}
+	if !errors.Is(waiter, creator) {
+		t.Fatalf("waiter error = %v, want the creator's %v", waiter, creator)
+	}
+	if err := <-shutdownDone; err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+}
+
+// TestAwaitCreatingInheritsDeleteCreationError proves a waiter woken by a
+// creation abandoned by DELETE observes the same cause as the creator.
+func TestAwaitCreatingInheritsDeleteCreationError(t *testing.T) {
+	f := newTestFactory(t)
+	f.setOnCreate(liveOnCreate)
+	p, _ := newProxyForTest(t, f)
+	ctx := t.Context()
+	id := "delete-waiter-error"
+	agent := "alpha"
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	realServer := p.storeServer
+	p.storeServer = func(ctx context.Context, serverID string) (acpstore.Server, error) {
+		close(entered)
+		<-release
+		return realServer(ctx, serverID)
+	}
+
+	creatorErr := make(chan error, 1)
+	go func() {
+		_, err := p.Post(ctx, id, &agent, "initialize", initPayload)
+		creatorErr <- err
+	}()
+	awaitSignal(t, entered, "creation store read")
+
+	waiterArrived := make(chan struct{}, 1)
+	p.beforeCreateWait = func() { waiterArrived <- struct{}{} }
+	waiterErr := make(chan error, 1)
+	go func() {
+		_, err := p.Post(ctx, id, nil, "initialize", initPayload)
+		waiterErr <- err
+	}()
+	awaitSignal(t, waiterArrived, "waiter arrival")
+
+	deleteDone := make(chan error, 1)
+	go func() { deleteDone <- p.Delete(ctx, id) }()
+	waitFor(t, func() bool { return p.isDeleting(id) })
+	close(release)
+
+	creator := <-creatorErr
+	waiter := <-waiterErr
+	if !errors.Is(waiter, creator) {
+		t.Fatalf("waiter error = %v, want the creator's %v", waiter, creator)
+	}
+	if err := <-deleteDone; err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+}
+
 // TestAbandonCreateKillFailureRetainsRuntime proves a spawned runtime that lost
 // its publication race is not orphaned when its teardown kill fails: the
 // instance stays tracked with the runtime so a retrying DELETE can terminate

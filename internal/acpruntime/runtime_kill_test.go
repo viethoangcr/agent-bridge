@@ -2,6 +2,7 @@ package acpruntime
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"syscall"
@@ -80,6 +81,51 @@ func TestRuntimePostExitKillDoesNotSignalReusedGroup(t *testing.T) {
 	}
 	if state, ok := processState(unrelated); !ok || state == 'Z' {
 		t.Fatalf("unrelated group process %d state = %q (present %v), want alive after post-exit Kill", unrelated, state, ok)
+	}
+}
+
+// TestRuntimeKillInterleavedWithReapDoesNotSignalReusedGroup forces the exact
+// in-wait interleaving window: the waiter is paused after reaping the direct
+// child, the captured PGID is overwritten with a live unrelated group (as the
+// kernel recycling the ID would), and a Kill then runs. The group's signal gate
+// must already be closed, so the recycled group is never signaled.
+func TestRuntimeKillInterleavedWithReapDoesNotSignalReusedGroup(t *testing.T) {
+	requireLinux(t)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	r, _, pidPath := startHelperRuntimeHooked(t, helperProcessGroup, time.Minute, func() {
+		close(entered)
+		<-release
+	})
+	pids := readHelperPIDs(t, pidPath)
+	cleanupReportedPIDs(t, pids)
+
+	// Natural exit of only the direct child; the grandchild holds the inherited
+	// pipes until the waiter's mandatory group kill.
+	if err := syscall.Kill(pids.Direct, syscall.SIGKILL); err != nil {
+		t.Fatalf("kill direct child: %v", err)
+	}
+	awaitSignal(t, entered, "waiter paused after reaping the direct child")
+
+	// Simulate the kernel recycling the reaped child's PGID for a live group
+	// before the waiter releases the captured id.
+	unrelated := startUnrelatedProcessGroup(t)
+	r.pgid.Store(int64(unrelated))
+
+	// An already-cancelled context makes Kill signal (or no-op) and return
+	// without waiting for the still-paused waiter.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := r.Kill(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("interleaved Kill = %v, want context.Canceled", err)
+	}
+
+	// Let the waiter finish so a signal sent during the window is delivered
+	// before the recycled group is inspected.
+	close(release)
+	_ = r.Wait()
+	if state, ok := processState(unrelated); !ok || state == 'Z' {
+		t.Fatalf("unrelated group process %d state = %q (present %v), want alive after the interleaved Kill", unrelated, state, ok)
 	}
 }
 
