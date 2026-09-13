@@ -8,9 +8,9 @@ Scope and "!" (breaking change) are optional.
 
 <!-- What changed and why, in a few direct sentences. -->
 
-## Plan / phase
+## Context
 
-<!-- Link the phase plan or the authoritative spec entry this implements. -->
+<!-- Why this change is needed: the problem, issue, or prior behavior it addresses. -->
 
 ## Testing
 
