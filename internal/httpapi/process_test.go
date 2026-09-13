@@ -28,7 +28,6 @@ func newProcessServer(t *testing.T) (*Server, *process.Manager) {
 	return NewServer(Dependencies{Processes: manager}), manager
 }
 
-// doProcessRequest drives one request through the public assembly path.
 func doProcessRequest(t *testing.T, s *Server, method, target, contentType, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(method, target, strings.NewReader(body))
@@ -40,7 +39,6 @@ func doProcessRequest(t *testing.T, s *Server, method, target, contentType, body
 	return rec
 }
 
-// configJSON marshals a full replacement config after applying mutate.
 func configJSON(t *testing.T, mutate func(*process.Config)) string {
 	t.Helper()
 	cfg := process.DefaultConfig()
@@ -219,8 +217,6 @@ func TestProcessConfigContentTypeStrictness(t *testing.T) {
 	}
 }
 
-// startManagedProcess starts a process through the public endpoint and returns
-// its snapshot.
 func startManagedProcess(t *testing.T, s *Server, body string) process.Snapshot {
 	t.Helper()
 	rec := doProcessRequest(t, s, http.MethodPost, "/v1/processes", "application/json", body)
@@ -257,7 +253,6 @@ func waitProcessExited(t *testing.T, manager *process.Manager, id string) proces
 	}
 }
 
-// decodeObject decodes a JSON object into its raw members.
 func decodeObject(t *testing.T, body []byte) map[string]json.RawMessage {
 	t.Helper()
 	var obj map[string]json.RawMessage
@@ -267,7 +262,6 @@ func decodeObject(t *testing.T, body []byte) map[string]json.RawMessage {
 	return obj
 }
 
-// assertExactKeys fails unless obj has exactly the wanted keys.
 func assertExactKeys(t *testing.T, obj map[string]json.RawMessage, want ...string) {
 	t.Helper()
 	if len(obj) != len(want) {
@@ -289,7 +283,6 @@ func sortedKeys(obj map[string]json.RawMessage) []string {
 	return keys
 }
 
-// assertProblem fails unless rec is an RFC 9457 response with status.
 func assertProblem(t *testing.T, rec *httptest.ResponseRecorder, status int) {
 	t.Helper()
 	if rec.Code != status {

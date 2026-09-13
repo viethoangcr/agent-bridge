@@ -95,14 +95,12 @@ func (it *writeItem) cancelBeforeWrite(err error) (begun bool) {
 	return false
 }
 
-// result returns the terminal write error.
 func (it *writeItem) result() error {
 	it.mu.Lock()
 	defer it.mu.Unlock()
 	return it.err
 }
 
-// finished reports the terminal write error once the writer has completed.
 func (it *writeItem) finished() (error, bool) {
 	it.mu.Lock()
 	defer it.mu.Unlock()
@@ -193,8 +191,6 @@ func (r *Runtime) cancelWriterStopped(item *writeItem) error {
 	return ErrExited
 }
 
-// startWriter lazily creates the queue and launches the single serializer
-// goroutine. Start calls it once; tests call it directly.
 func (r *Runtime) startWriter() {
 	r.writerOnce.Do(func() {
 		if r.writerQueue == nil {
@@ -213,7 +209,6 @@ func (r *Runtime) startWriter() {
 	})
 }
 
-// stopWriter signals the serializer to stop. It is idempotent.
 func (r *Runtime) stopWriter() {
 	if r.writerStop == nil {
 		return
@@ -238,7 +233,6 @@ func (r *Runtime) poison() {
 	})
 }
 
-// awaitWriterStopped joins the serializer after a failure.
 func (r *Runtime) awaitWriterStopped() {
 	if r.writerStopped == nil {
 		return
@@ -283,7 +277,6 @@ func (r *Runtime) writerLoop() {
 	}
 }
 
-// drainWrites fails every queued item with err.
 func (r *Runtime) drainWrites(err error) {
 	for {
 		select {

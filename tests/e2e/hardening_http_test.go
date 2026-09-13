@@ -13,7 +13,6 @@ import (
 	"time"
 )
 
-// assertProblemJSON asserts one response is the bridge's RFC 9457 document.
 func assertProblemJSON(t *testing.T, resp *http.Response, data []byte, want int) {
 	t.Helper()
 	if resp.StatusCode != want {
@@ -31,7 +30,6 @@ func assertProblemJSON(t *testing.T, resp *http.Response, data []byte, want int)
 	}
 }
 
-// v1Route is one representative method/path pair for a registered route family.
 type v1Route struct {
 	method string
 	target string

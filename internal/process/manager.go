@@ -56,7 +56,6 @@ type managerBudgets struct {
 	activeRunPeakBytes     int
 }
 
-// productionBudgets returns the fixed production admission budgets.
 func productionBudgets() managerBudgets {
 	return managerBudgets{
 		retainedLogMemoryBytes: MaxRetainedLogMemoryBytes,
@@ -157,8 +156,6 @@ func (m *Manager) watch(p *managedProcess) {
 	close(p.done)
 }
 
-// publishExit records the direct child's exit code and timestamp under the
-// registry lock unless the record already exited.
 func (m *Manager) publishExit(p *managedProcess) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -208,8 +205,6 @@ func mergeEnv(base []string, overlay map[string]string) []string {
 	return out
 }
 
-// closePipe closes c best-effort. Pipes are closed on every pre-spawn failure
-// path so no descriptor leaks.
 func closePipe(c io.Closer) {
 	_ = c.Close()
 }

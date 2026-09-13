@@ -33,6 +33,7 @@ func errorKind(t *testing.T, err error) filesystem.ErrorKind {
 	return e.Kind
 }
 
+// TestConfigPathResolvesFixedSuffix proves the resolved path always appends the fixed suffix and rejects unknown kinds.
 func TestConfigPathResolvesFixedSuffix(t *testing.T) {
 	home := t.TempDir()
 	svc, _ := newTestService(t, home)
@@ -62,6 +63,7 @@ func TestConfigPathResolvesFixedSuffix(t *testing.T) {
 	}
 }
 
+// TestGetMissingDoesNotCreateRoots proves a missing config reports not_found without creating directories.
 func TestGetMissingDoesNotCreateRoots(t *testing.T) {
 	svc, _ := newTestService(t, "")
 	dir := t.TempDir()
@@ -74,6 +76,7 @@ func TestGetMissingDoesNotCreateRoots(t *testing.T) {
 	}
 }
 
+// TestPutMCPValidation proves valid mcp configs round-trip and invalid ones are rejected without writing.
 func TestPutMCPValidation(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -126,6 +129,7 @@ func TestPutMCPValidation(t *testing.T) {
 	}
 }
 
+// TestPutSkillsValidation proves skills configs accept arbitrary object values and reject invalid shapes.
 func TestPutSkillsValidation(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -162,6 +166,7 @@ func TestPutSkillsValidation(t *testing.T) {
 	}
 }
 
+// TestDeleteRemovesFileAndMissingIsNotFound proves Delete removes the file and reports not_found when absent.
 func TestDeleteRemovesFileAndMissingIsNotFound(t *testing.T) {
 	svc, _ := newTestService(t, "")
 	dir := t.TempDir()

@@ -12,14 +12,14 @@ import (
 // file PUT and by tar.gz uploads.
 const MaxFileBytes int64 = 512 << 20
 
-// MaxUploadCompressedBytes and MaxUploadExtractedBytes bound tar.gz uploads.
 const (
+	// MaxUploadCompressedBytes bounds the compressed size of a tar.gz upload.
 	MaxUploadCompressedBytes int64 = MaxFileBytes
-	MaxUploadExtractedBytes  int64 = MaxFileBytes
+	// MaxUploadExtractedBytes bounds the cumulative declared size extracted from
+	// a tar.gz upload.
+	MaxUploadExtractedBytes int64 = MaxFileBytes
 )
 
-// stagingPrefix names every temporary extraction tree so a rejected upload is
-// identifiable and always removed.
 const stagingPrefix = "agent-bridge-upload-"
 
 // UploadedFile reports one regular file the archive intends to place at the
@@ -64,8 +64,6 @@ func (c *countingReader) ReadByte() (byte, error) {
 	return 0, err
 }
 
-// exceeded reports whether more than limit bytes were consumed. A full read of
-// limit+1 is the largest possible, so this is exactly "over the limit".
 func (c *countingReader) exceeded() bool { return c.n > c.limit }
 
 // Upload validates a gzip-compressed tar stream, extracts it into a staging

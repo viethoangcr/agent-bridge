@@ -11,7 +11,7 @@ import (
 
 // Start validates req, reserves concurrency capacity, spawns the command in its
 // own process group, and returns a running snapshot. On spawn failure it
-// releases the reservation without creating a record.
+// releases the reservation without retaining a record.
 func (m *Manager) Start(req StartRequest) (Snapshot, error) {
 	command := strings.TrimSpace(req.Command)
 	if command == "" {

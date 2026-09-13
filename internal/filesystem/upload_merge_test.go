@@ -73,8 +73,6 @@ func TestUploadMergeOverwritesReusesAndPreserves(t *testing.T) {
 	}
 }
 
-// firstReadSignal closes first on the first Read call so a test can observe
-// when Upload starts consuming the compressed input.
 type firstReadSignal struct {
 	r     io.Reader
 	first chan struct{}

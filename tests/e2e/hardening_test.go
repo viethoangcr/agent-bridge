@@ -9,8 +9,7 @@ import "testing"
 // boundaries. Image-level structural checks that need no live server run
 // first; the live checks each own the container they create. Expensive real
 // boundaries (10MiB ACP, 512MiB filesystem, 8KiB stderr) stay in their existing
-// owning tests and are deliberately not repeated here. Per-concern bodies live
-// in the sibling hardening files.
+// owning tests and are deliberately not repeated here.
 func TestDockerHardeningContract(t *testing.T) {
 	image := buildImage(t)
 

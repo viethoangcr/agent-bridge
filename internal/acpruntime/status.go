@@ -52,7 +52,6 @@ func (r *Runtime) reconcileStatus() error {
 	return nil
 }
 
-// reconcileStatusAndFail reconciles and, on failure, fails the runtime.
 func (r *Runtime) reconcileStatusAndFail() {
 	if err := r.reconcileStatus(); err != nil {
 		r.failPersistence(err)

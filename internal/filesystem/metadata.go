@@ -83,7 +83,8 @@ func (s *Service) Stat(path string) (Stat, error) {
 }
 
 // Open returns an open descriptor plus metadata for a regular file. Opening a
-// directory or any non-regular object is invalid. The descriptor is stat'ed
+// directory or any non-regular object is invalid. The caller must close the
+// returned file; on failure Open closes it itself. The descriptor is stat'ed
 // directly so the caller does not re-resolve a possibly changed path.
 func (s *Service) Open(path string) (*os.File, Stat, error) {
 	resolved, err := s.Resolve(path)
@@ -107,8 +108,6 @@ func (s *Service) Open(path string) (*os.File, Stat, error) {
 	return file, st, nil
 }
 
-// statFromInfo reports whether info is a supported file or directory and
-// converts it to a Stat with permission-only mode.
 func statFromInfo(path string, info fs.FileInfo) (Stat, bool) {
 	entryType := ""
 	switch {

@@ -11,9 +11,9 @@ import (
 	"time"
 )
 
-// TestProcessShutdown is the Task 4.9 RED suite for the staged process
-// shutdown. It covers the pre-drain blocker, the shutdown killer, reservation
-// release, idempotency, and the rule that exited records are never signaled.
+// TestProcessShutdown covers the staged process shutdown: the pre-drain
+// blocker, the shutdown killer, reservation release, idempotency, and the rule
+// that exited records are never signaled.
 func TestProcessShutdown(t *testing.T) {
 	requireLinuxProcess(t)
 

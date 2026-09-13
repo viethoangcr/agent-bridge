@@ -13,8 +13,6 @@ import (
 	"github.com/viethoangcr/agent-bridge/internal/process"
 )
 
-// processSnapshotView is the subset of a managed snapshot the integration test
-// asserts on.
 type processSnapshotView struct {
 	ID       string `json:"id"`
 	Status   string `json:"status"`
@@ -40,8 +38,6 @@ func (b *bridge) waitProcessDone(pid int) {
 	b.waitFor(5*time.Second, "process group termination", func() bool { return processDone(pid) })
 }
 
-// waitProcessStdout polls the managed process logs until the decoded stdout
-// stream equals want.
 func (b *bridge) waitProcessStdout(id, want string) {
 	b.t.Helper()
 	b.waitFor(5*time.Second, "stdout "+want, func() bool {
@@ -65,9 +61,9 @@ func (b *bridge) waitProcessStdout(id, want string) {
 	})
 }
 
-// TestProcessHTTP is the phase-local integration: it drives the process API
-// through the full app composition over real HTTP and proves the staged
-// pre-drain/shutdown hooks terminate managed groups while the bridge stays up.
+// TestProcessHTTP drives the process API through the full app composition over
+// real HTTP and proves the staged pre-drain/shutdown hooks terminate managed
+// groups while the bridge stays up.
 func TestProcessHTTP(t *testing.T) {
 	t.Run("auth-and-problem-middleware", func(t *testing.T) {
 		b := startBridge(t, bridgeOptions{token: "secret"})
@@ -102,7 +98,6 @@ func TestProcessHTTP(t *testing.T) {
 		b := startBridge(t, bridgeOptions{})
 		defer b.stop()
 
-		// Start a managed process with an echoable stdin.
 		resp := b.do(http.MethodPost, "/v1/processes", `{"command":"/bin/cat"}`, nil)
 		body, _ := readAll(resp)
 		if resp.StatusCode != http.StatusOK {
@@ -124,7 +119,6 @@ func TestProcessHTTP(t *testing.T) {
 		}
 		b.waitProcessStdout(snap.ID, "hello-integration")
 
-		// Stop, get, delete.
 		resp = b.do(http.MethodPost, "/v1/processes/"+snap.ID+"/stop", "", nil)
 		body, _ = readAll(resp)
 		if resp.StatusCode != http.StatusOK {
@@ -147,7 +141,6 @@ func TestProcessHTTP(t *testing.T) {
 			t.Fatalf("delete status = %d, want 204", resp.StatusCode)
 		}
 
-		// One-shot timeout through the real server.
 		resp = b.do(http.MethodPost, "/v1/processes/run", `{"command":"/bin/sleep","args":["30"],"timeoutMs":50}`, nil)
 		body, _ = readAll(resp)
 		if resp.StatusCode != http.StatusOK {
@@ -161,7 +154,6 @@ func TestProcessHTTP(t *testing.T) {
 			t.Fatalf("run result = %+v, want timedOut with no exitCode", run)
 		}
 
-		// Full-replacement config update.
 		cfg := process.DefaultConfig()
 		cfg.MaxOutputBytes = 2048
 		encoded, err := json.Marshal(cfg)
@@ -195,7 +187,6 @@ func TestProcessHTTP(t *testing.T) {
 	})
 }
 
-// readAll drains and closes resp.Body, returning the body bytes.
 func readAll(resp *http.Response) ([]byte, error) {
 	defer resp.Body.Close()
 	var buf bytes.Buffer

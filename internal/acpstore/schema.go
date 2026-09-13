@@ -47,8 +47,6 @@ CREATE INDEX IF NOT EXISTS events_server_session_seq
     ON events (server_id, session_id, seq);
 `
 
-// applySchema creates the authoritative tables and index. It is safe to call
-// on every open because every statement is guarded by IF NOT EXISTS.
 func (s *Store) applySchema(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("create schema: %w", err)

@@ -4,8 +4,6 @@ import (
 	"testing"
 )
 
-// TestProxyLivePID proves LivePID returns the current generation's runtime PID,
-// never the stale durable PID, and refuses gated or exited generations.
 func TestProxyLivePID(t *testing.T) {
 	f := newTestFactory(t)
 	f.setOnCreate(liveOnCreate)

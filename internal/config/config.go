@@ -1,8 +1,3 @@
-// Package config parses and validates the agent-bridge startup environment.
-//
-// Load is the only interpreter of public AGENT_BRIDGE_* variables. It applies
-// the documented defaults, rejects malformed or out-of-range values, and
-// enforces the loopback/token safety rule before the server starts.
 package config
 
 import (
@@ -16,7 +11,6 @@ import (
 	"time"
 )
 
-// Defaults and bounds for the authoritative startup environment contract.
 const (
 	defaultHost              = "127.0.0.1"
 	defaultPort              = 2468
@@ -35,22 +29,41 @@ const (
 // one agent. A configured path is used as-is; a bare name is resolved through
 // LookPath by the acpruntime resolver.
 type AgentCommand struct {
+	// Binary is the executable path or bare command name to launch.
 	Binary string
-	Args   []string
+	// Args is the configured argument vector; nil means no arguments were set.
+	Args []string
 }
 
-// Config is the validated startup configuration.
+// Config is the validated startup configuration returned by Load. Every field
+// is already bounded and safety-checked, and Agents plus each AgentCommand.Args
+// is freshly allocated so callers may mutate them without aliasing others.
 type Config struct {
-	Host                string
-	Port                int
-	LogLevel            slog.Level
-	DBPath              string
-	Token               string
+	// Host is the bind host after defaults, defaulting to 127.0.0.1.
+	Host string
+	// Port is the TCP listen port within 1..65535.
+	Port int
+	// LogLevel is the minimum slog level to emit.
+	LogLevel slog.Level
+	// DBPath is the SQLite path, absolute or relative to the process working
+	// directory.
+	DBPath string
+	// Token is the bearer token required for a non-loopback bind unless
+	// AllowInsecureRemote is set; it may be empty for a loopback bind.
+	Token string
+	// AllowInsecureRemote disables the token requirement for a non-loopback
+	// bind and must only be enabled deliberately.
 	AllowInsecureRemote bool
-	PIDFile             string
-	ACPRequestTimeout   time.Duration
-	IdleTTL             time.Duration
-	Agents              map[string]AgentCommand
+	// PIDFile is the optional path written with the bridge PID; empty disables
+	// PID-file management.
+	PIDFile string
+	// ACPRequestTimeout bounds each ACP request before the bridge returns 504.
+	ACPRequestTimeout time.Duration
+	// IdleTTL is how long an idle server waits before it is reaped; zero
+	// disables idle reaping.
+	IdleTTL time.Duration
+	// Agents maps each supported agent name to its configured command.
+	Agents map[string]AgentCommand
 }
 
 // Load reads the startup environment through getenv and returns a validated
@@ -164,8 +177,6 @@ func loadAgents(getenv func(string) string) (map[string]AgentCommand, error) {
 	return agents, nil
 }
 
-// parseAgentArgs decodes a JSON array of strings. It rejects null, objects,
-// scalars, non-string elements, and malformed JSON.
 func parseAgentArgs(name, value string) ([]string, error) {
 	if !strings.HasPrefix(strings.TrimSpace(value), "[") {
 		return nil, fmt.Errorf("%s must be a JSON array of strings", name)
@@ -195,7 +206,6 @@ func parseMilliseconds(name, value string, min, max time.Duration) (time.Duratio
 	return d, nil
 }
 
-// parseLogLevel maps a case-insensitive level name to its slog value.
 func parseLogLevel(value string) (slog.Level, bool) {
 	switch strings.ToLower(value) {
 	case "debug":

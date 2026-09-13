@@ -31,8 +31,6 @@ func openProcessPipes(cmd *exec.Cmd, program string) (io.WriteCloser, io.ReadClo
 	return stdin, stdout, stderr, nil
 }
 
-// observedExit reports whether pid's exit can be peeked without reaping. It
-// uses the test seam when set and procgroup.ObserveExit otherwise.
 func (r *Runtime) observedExit(pid int) bool {
 	if r.observeExit != nil {
 		return r.observeExit(r, pid)
@@ -99,7 +97,6 @@ func (r *Runtime) writeRaw(record []byte) (int, error) {
 	return stdin.Write(record)
 }
 
-// writeLine writes one newline-delimited payload to the child's stdin.
 func (r *Runtime) writeLine(line []byte) error {
 	buf := make([]byte, 0, len(line)+1)
 	buf = append(buf, line...)

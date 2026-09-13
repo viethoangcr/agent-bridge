@@ -5,13 +5,12 @@ import (
 	"errors"
 )
 
-// Delete marks the server deleting, blocks new leases, immediately
-// signal-and-waits the current runtime outside every lock, drains activity
-// leases, confirms completion, and prunes the durable row. A creation in
-// flight is awaited without any lock, then terminated like any live runtime. A
-// prune failure leaves the row exited, removes the live instance, clears the
-// deleting gate, and is retryable by a later Delete without restarting a
-// process.
+// Delete terminates the server's current runtime and prunes its durable row. It
+// blocks new leases and hard-closes subscriptions for the server. A failed
+// termination keeps the server gated and the live instance tracked so a later
+// Delete retries without pruning; a failed prune leaves the row exited and is
+// retryable without restarting a process. It is safe for concurrent use, and
+// ctx bounds the termination and prune waits.
 func (p *Proxy) Delete(ctx context.Context, serverID string) error {
 	lk := p.keyedLock(serverID)
 	defer p.releaseKeyedLock(serverID, lk)

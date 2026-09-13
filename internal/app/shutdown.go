@@ -79,10 +79,6 @@ func serve(ctx context.Context, ln net.Listener, srv httpServer, pre, post *life
 
 	select {
 	case err := <-serveErr:
-		// Listener acceptance already stopped because Serve returned. Run the
-		// same staged drain as cancellation: pre-drain, HTTP Shutdown waiting
-		// for handlers, post-drain confirm/commit/checkpoint/close, PID removal
-		// last, all under one absolute deadline.
 		drain(ctx, ln, srv, pre, post, logger, pidFile, grace)
 		if err != nil && !isNormalClose(err) {
 			return fmt.Errorf("http server: %w", err)
@@ -132,16 +128,12 @@ func drain(ctx context.Context, ln io.Closer, srv httpShutdowner, pre, post *lif
 	deadline := time.Now().Add(grace)
 	parent := context.WithoutCancel(ctx)
 
-	// 1. Stop accepting new connections.
 	if err := ln.Close(); err != nil && !isNormalClose(err) {
 		logger.Error("closing listener", "error", err)
 	}
 
-	// 2. Pre-drain: close streams, stop reapers, signal and wait processes.
 	shutdownPre(parent, deadline, pre, logger)
 
-	// 3. Drain now-unblocked handlers. If the absolute budget expires while
-	// Shutdown is still draining, force-close remaining connections.
 	shutdownCtx, cancelShutdown := context.WithDeadline(parent, deadline)
 	shutdownErr := srv.Shutdown(shutdownCtx)
 	expired := shutdownCtx.Err() != nil
@@ -155,8 +147,6 @@ func drain(ctx context.Context, ln io.Closer, srv httpShutdowner, pre, post *lif
 		}
 	}
 
-	// 4. Post-drain: confirm completion, commit non-process work, close the DB.
-	// 5. The PID file goes last.
 	closePostAndRemovePID(parent, post, logger, deadline, pidFile)
 }
 

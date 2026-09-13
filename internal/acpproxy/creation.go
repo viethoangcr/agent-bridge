@@ -9,15 +9,13 @@ import (
 	"github.com/viethoangcr/agent-bridge/internal/acpstore"
 )
 
-// Post routes one validated client envelope to the current runtime, creating
-// or recreating it when necessary. Creation reserves a per-ID placeholder
-// under the lifecycle lock, then performs the durable read, resolution, and
-// spawn I/O without any lifecycle or global lock before publishing the
-// runtime. Concurrent callers finding a placeholder wait on its ready channel
-// without any lock and recheck the current generation and gates afterwards.
-// The activity lease is taken under the lifecycle lock after those rechecks,
-// and Runtime.Post runs without any lock. The original payload is passed
-// through unchanged; only Runtime.Post compacts it.
+// Post routes one client envelope to the server's current runtime, creating or
+// recreating that runtime when necessary. Concurrent callers for the same
+// server ID are serialized on the runtime lifecycle so exactly one creation
+// wins; callers for other servers proceed independently. The payload is passed
+// through unchanged for the runtime to validate and compact. Lifecycle failures
+// are returned as the package sentinel errors the HTTP layer maps to problem
+// responses.
 func (p *Proxy) Post(ctx context.Context, serverID string, agent *string, method string, payload json.RawMessage) (acpruntime.PostResult, error) {
 	if p.closed.Load() {
 		return acpruntime.PostResult{}, ErrClosed

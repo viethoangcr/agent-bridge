@@ -18,14 +18,18 @@ const (
 type Lifecycle string
 
 const (
-	LifecycleNone   Lifecycle = "none"
-	LifecycleNew    Lifecycle = "new"
-	LifecycleLoad   Lifecycle = "load"
+	// LifecycleNone marks a message that is not a lifecycle request.
+	LifecycleNone Lifecycle = "none"
+	// LifecycleNew marks a session/new request.
+	LifecycleNew Lifecycle = "new"
+	// LifecycleLoad marks a session/load request.
+	LifecycleLoad Lifecycle = "load"
+	// LifecycleResume marks a session/resume request.
 	LifecycleResume Lifecycle = "resume"
 )
 
 // pendingMeta is the bounded request metadata the output classifier reads for a
-// matching response. Task 2.9c owns the correlation map and supplies this seam.
+// matching response.
 type pendingMeta struct {
 	Lifecycle Lifecycle
 	SessionID *string
@@ -183,7 +187,6 @@ func sessionMutation(pending pendingMeta, result json.RawMessage, hasError bool)
 	}
 }
 
-// resultSessionID extracts a bounded result.sessionId from a lifecycle success.
 func resultSessionID(result json.RawMessage) (string, bool) {
 	if len(result) == 0 {
 		return "", false
@@ -197,7 +200,6 @@ func resultSessionID(result json.RawMessage) (string, bool) {
 	return boundedString(body.SessionID, maxSessionIDBytes)
 }
 
-// paramsString extracts a bounded string field from a JSON object params.
 func paramsString(params json.RawMessage, key string, limit int) (string, bool) {
 	if len(params) == 0 || isJSONNull(params) {
 		return "", false
@@ -209,8 +211,6 @@ func paramsString(params json.RawMessage, key string, limit int) (string, bool) 
 	return boundedString(fields[key], limit)
 }
 
-// boundedString returns the decoded JSON string when it is a string no longer
-// than limit UTF-8 bytes.
 func boundedString(raw json.RawMessage, limit int) (string, bool) {
 	if len(raw) == 0 || isJSONNull(raw) {
 		return "", false
@@ -225,7 +225,6 @@ func boundedString(raw json.RawMessage, limit int) (string, bool) {
 	return s, true
 }
 
-// validOutputID reports whether raw is a non-null JSON string or number ID.
 func validOutputID(raw json.RawMessage) bool {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 {
@@ -245,8 +244,6 @@ func isJSONNull(raw json.RawMessage) bool {
 	return string(bytes.TrimSpace(raw)) == "null"
 }
 
-// boundedCWD returns the retained cwd within its byte cap, or an empty string
-// when it is absent or over-limit.
 func boundedCWD(p *string) string {
 	if p == nil || len(*p) > maxCWDBytes {
 		return ""

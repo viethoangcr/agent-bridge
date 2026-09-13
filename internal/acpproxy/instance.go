@@ -100,7 +100,7 @@ func (i *instance) releaseActivity() {
 
 // waitActivityZero blocks until no active leases remain or ctx ends. The caller
 // must hold the lifecycle lock; it is released while waiting and reacquired
-// before returning. This is the 3.3 reaper/delete drain primitive.
+// before returning.
 func (i *instance) waitActivityZero(ctx context.Context) error {
 	for i.activity > 0 {
 		drained := i.zero

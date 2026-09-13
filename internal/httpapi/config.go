@@ -10,7 +10,7 @@ import (
 
 // registerConfigRoutes installs the method-specific config endpoints. No
 // methodless same-path fallbacks are registered, so wrong methods are owned by
-// the Phase 01 root fallback.
+// the shared root fallback.
 func (s *Server) registerConfigRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/config/mcp", s.handleMCPConfig)
 	mux.HandleFunc("PUT /v1/config/mcp", s.handleMCPConfig)
@@ -20,7 +20,6 @@ func (s *Server) registerConfigRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /v1/config/skills", s.handleSkillsConfig)
 }
 
-// requireProjectConfig rejects requests when no config service was injected.
 func (s *Server) requireProjectConfig(w http.ResponseWriter) bool {
 	if s.deps.Config == nil {
 		writeProblem(w, http.StatusServiceUnavailable, "project config service is unavailable")
@@ -29,12 +28,10 @@ func (s *Server) requireProjectConfig(w http.ResponseWriter) bool {
 	return true
 }
 
-// handleMCPConfig serves the whole-object MCP config file.
 func (s *Server) handleMCPConfig(w http.ResponseWriter, r *http.Request) {
 	s.handleProjectConfig(w, r, "mcp")
 }
 
-// handleSkillsConfig serves the whole-object skills config file.
 func (s *Server) handleSkillsConfig(w http.ResponseWriter, r *http.Request) {
 	s.handleProjectConfig(w, r, "skills")
 }

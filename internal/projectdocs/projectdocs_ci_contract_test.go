@@ -7,9 +7,9 @@ import (
 	"testing"
 )
 
-// TestCIWorkflowContract locks the Phase 06 Task 6.11 CI contract: exact
-// triggers, least-privilege permissions, exact job gating, read-only formatting
-// drift detection, pinned checks and Docker gates, and full-SHA action pins.
+// TestCIWorkflowContract locks the CI contract: exact triggers, least-privilege
+// permissions, exact job gating, read-only formatting drift detection, pinned
+// checks and Docker gates, and full-SHA action pins.
 func TestCIWorkflowContract(t *testing.T) {
 	workflow, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "ci.yml"))
 	if err != nil {

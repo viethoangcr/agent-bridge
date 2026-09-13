@@ -14,12 +14,14 @@ import (
 // after which the subscription re-queries authoritative SQLite state.
 const subscriptionFallbackInterval = time.Second
 
-// Subscription is one replay-then-live event reader for a server. Next returns
-// persisted acpstore.Event values in ascending sequence order; io.EOF means the
-// runtime terminated or the subscription closed. Close is idempotent and does
-// not affect other subscriptions of the same server.
+// Subscription is one replay-then-live event reader for a server.
 type Subscription interface {
+	// Next returns the next persisted event in ascending sequence order. It
+	// returns io.EOF when the runtime terminated or the subscription closed,
+	// and ctx.Err() when ctx is done. Calls must not overlap.
 	Next(context.Context) (acpstore.Event, error)
+	// Close stops the subscription. It is idempotent, safe for concurrent use,
+	// and does not affect other subscriptions of the same server.
 	Close()
 }
 
@@ -170,8 +172,6 @@ func (s *subscription) Next(ctx context.Context) (acpstore.Event, error) {
 	}
 }
 
-// hardClosed reports whether Close has completed. Once it has, Next never
-// replays another event.
 func (s *subscription) hardClosed() bool {
 	select {
 	case <-s.closed:
@@ -181,9 +181,6 @@ func (s *subscription) hardClosed() bool {
 	}
 }
 
-// query reads the next persisted event strictly after lastSeq. The store
-// returns copied acpstore.Event values; the proxy never caches or reorders
-// them.
 func (s *subscription) query(ctx context.Context) ([]acpstore.Event, error) {
 	return s.proxy.store.Events(ctx, s.serverID, acpstore.EventQuery{
 		After: s.lastSeq,
@@ -220,7 +217,6 @@ func (p *Proxy) watchEvents(inst *instance) {
 	}
 }
 
-// notifySubscribers attempts a non-blocking capacity-one wakeup per subscriber.
 func (p *Proxy) notifySubscribers(inst *instance) {
 	inst.subMu.Lock()
 	subs := make([]*subscription, 0, len(inst.subs))
@@ -257,8 +253,6 @@ func (p *Proxy) registerSubscriber(inst *instance, sub *subscription) {
 	}
 }
 
-// unregisterSubscriber detaches sub from inst so a closed subscription stops
-// receiving wakeups.
 func (p *Proxy) unregisterSubscriber(inst *instance, sub *subscription) {
 	inst.subMu.Lock()
 	delete(inst.subs, sub)
@@ -282,7 +276,7 @@ func (p *Proxy) terminateSubscribers(inst *instance) {
 	}
 }
 
-// closeSubscriptions is the DELETE/shutdown seam (Task 3.3): it stops every
+// closeSubscriptions is the DELETE/shutdown seam: it stops every
 // subscription attached to the current generation and blocks new ones. Each
 // subscription's Close removes its own registration, so a natural-exit
 // terminate that raced ahead cannot hide subscribers from this hard close.
@@ -333,7 +327,6 @@ func (p *Proxy) allowServerSubs(serverID string) bool {
 	return true
 }
 
-// unregisterServerSub drops a closed subscription from the registry.
 func (p *Proxy) unregisterServerSub(serverID string, sub *subscription) {
 	p.mu.Lock()
 	if set := p.subReg[serverID]; set != nil {
@@ -345,8 +338,6 @@ func (p *Proxy) unregisterServerSub(serverID string, sub *subscription) {
 	p.mu.Unlock()
 }
 
-// closeSubscriptionsByServer hard-closes every subscription registered for a
-// server, live or exited.
 func (p *Proxy) closeSubscriptionsByServer(serverID string) {
 	p.mu.Lock()
 	p.subRegClosed[serverID] = struct{}{}

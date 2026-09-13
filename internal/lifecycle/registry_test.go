@@ -11,6 +11,7 @@ import (
 	"github.com/viethoangcr/agent-bridge/internal/lifecycle"
 )
 
+// TestShutdownRunsHooksInReverseOrderAndJoinsErrors proves reverse-order execution and joined hook errors.
 func TestShutdownRunsHooksInReverseOrderAndJoinsErrors(t *testing.T) {
 	errB := errors.New("b failed")
 	errC := errors.New("c failed")
@@ -56,6 +57,7 @@ func TestShutdownRunsHooksInReverseOrderAndJoinsErrors(t *testing.T) {
 	}
 }
 
+// TestShutdownReturnsNilWhenNoHookFails proves a clean shutdown reports nil after running every hook.
 func TestShutdownReturnsNilWhenNoHookFails(t *testing.T) {
 	var calls atomic.Int64
 	var r lifecycle.Registry
@@ -76,6 +78,7 @@ func TestShutdownReturnsNilWhenNoHookFails(t *testing.T) {
 	}
 }
 
+// TestShutdownIsIdempotent proves repeated Shutdown calls run hooks once and return the same result.
 func TestShutdownIsIdempotent(t *testing.T) {
 	sentinel := errors.New("boom")
 	var calls atomic.Int64
@@ -100,6 +103,7 @@ func TestShutdownIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestShutdownRunsHooksOnceUnderConcurrentCalls proves concurrent callers share one hook run and one result.
 func TestShutdownRunsHooksOnceUnderConcurrentCalls(t *testing.T) {
 	sentinel := errors.New("boom")
 	const hooks = 8
@@ -140,6 +144,7 @@ func TestShutdownRunsHooksOnceUnderConcurrentCalls(t *testing.T) {
 	}
 }
 
+// TestAddRejectedAfterShutdown proves Add after shutdown is rejected and never invokes the late hook.
 func TestAddRejectedAfterShutdown(t *testing.T) {
 	var r lifecycle.Registry
 	if err := r.Add("first", func(context.Context) error { return nil }); err != nil {
@@ -162,6 +167,7 @@ func TestAddRejectedAfterShutdown(t *testing.T) {
 	}
 }
 
+// TestShutdownPassesContextToHooks proves the shutdown context reaches every hook.
 func TestShutdownPassesContextToHooks(t *testing.T) {
 	type key struct{}
 	ctx := context.WithValue(context.Background(), key{}, "value")

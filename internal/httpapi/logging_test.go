@@ -11,12 +11,10 @@ import (
 	"testing"
 )
 
-// newTestLogger returns a JSON slog logger writing into buf.
 func newTestLogger(buf *bytes.Buffer) *slog.Logger {
 	return slog.New(slog.NewJSONHandler(buf, nil))
 }
 
-// logRecords decodes every JSON record captured in buf.
 func logRecords(t *testing.T, buf *bytes.Buffer) []map[string]any {
 	t.Helper()
 	var records []map[string]any
@@ -33,7 +31,6 @@ func logRecords(t *testing.T, buf *bytes.Buffer) []map[string]any {
 	return records
 }
 
-// onlyLogRecord requires exactly one captured record and returns it.
 func onlyLogRecord(t *testing.T, buf *bytes.Buffer) map[string]any {
 	t.Helper()
 	records := logRecords(t, buf)
@@ -43,7 +40,6 @@ func onlyLogRecord(t *testing.T, buf *bytes.Buffer) map[string]any {
 	return records[0]
 }
 
-// assertLogStatus asserts the numeric status field of a captured record.
 func assertLogStatus(t *testing.T, rec map[string]any, want int) {
 	t.Helper()
 	got, ok := rec["status"].(float64)
@@ -55,7 +51,6 @@ func assertLogStatus(t *testing.T, rec map[string]any, want int) {
 	}
 }
 
-// assertLatencyMs asserts latency_ms is a non-negative integer.
 func assertLatencyMs(t *testing.T, rec map[string]any) {
 	t.Helper()
 	got, ok := rec["latency_ms"].(float64)

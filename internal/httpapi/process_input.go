@@ -11,16 +11,11 @@ import (
 // compact `{data,encoding}` input envelope around the base64 expansion.
 const processInputEnvelopeBytes = 1024
 
-// processInputRequest is the exact `{data,encoding}` input envelope. Encoding
-// must be exactly base64 or utf8; data is the encoded payload.
 type processInputRequest struct {
 	Data     string `json:"data"`
 	Encoding string `json:"encoding"`
 }
 
-// handleProcessInput decodes the exact `{data,encoding}` body, enforces the
-// active decoded-byte limit, writes to the process stdin, and returns the
-// written byte count. The body is bounded by the active encoded ceiling.
 func (s *Server) handleProcessInput(w http.ResponseWriter, r *http.Request) {
 	if !requireNoQuery(w, r, detailInvalidProcessQuery) {
 		return

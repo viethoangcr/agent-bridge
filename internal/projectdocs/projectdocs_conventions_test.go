@@ -36,8 +36,8 @@ func TestReadmeDocumentsPhase01Contract(t *testing.T) {
 	}
 }
 
-// TestReadmeDocumentsFinalPublicContract locks the final Phase 06 public
-// operator documentation: build/run, every public environment variable, agent
+// TestReadmeDocumentsFinalPublicContract locks the final public operator
+// documentation: build/run, every public environment variable, agent
 // pins, endpoint families and limits, persistence mounts, staged shutdown, and
 // the keyless/headless auth limitations. It also requires the private mock
 // agent to stay out of public text and asserts the GET / docs URL is wired.

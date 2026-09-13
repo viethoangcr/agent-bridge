@@ -24,9 +24,18 @@ var knownACPAgents = map[string]struct{}{
 // every registered ACP route is satisfied at compile time; a partial
 // implementation cannot be injected and cannot silently yield 503 routes.
 type ACPProxy interface {
+	// Post dispatches one JSON-RPC envelope to serverID, creating the runtime on
+	// first use when agent is non-nil. The result reports acceptance or carries
+	// the raw response bytes.
 	Post(ctx context.Context, serverID string, agent *string, method string, payload json.RawMessage) (acpruntime.PostResult, error)
+	// LivePID reports the live process ID owned for serverID, if any. It is used
+	// only to decorate status responses.
 	LivePID(serverID string) (int, bool)
+	// Subscribe opens an event stream for serverID after the exclusive sequence
+	// and returns a not-found error when the server is unknown.
 	Subscribe(ctx context.Context, serverID string, after int64) (acpproxy.Subscription, error)
+	// Delete terminates and prunes serverID, returning a not-found error when it
+	// is unknown.
 	Delete(ctx context.Context, serverID string) error
 }
 
@@ -97,5 +106,4 @@ func parseAcceptRange(part string) (string, bool) {
 	return mediaType, true
 }
 
-// Compile-time proof that the concrete proxy satisfies the complete surface.
 var _ ACPProxy = (*acpproxy.Proxy)(nil)

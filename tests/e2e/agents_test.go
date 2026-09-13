@@ -62,8 +62,6 @@ func TestDockerKeylessAgents(t *testing.T) {
 	}
 }
 
-// startKeyless launches one container, completes ACP initialize, and proves
-// the initialize response was persisted before returning.
 func startKeyless(t *testing.T, image, agent string) (*container, string) {
 	t.Helper()
 	c := startContainer(t, image, uniqueToken("keyless-"+agent), nil, "")
@@ -82,8 +80,6 @@ func startKeyless(t *testing.T, image, agent string) (*container, string) {
 	return c, serverID
 }
 
-// waitResponseEvent polls durable events until the response carrying wantID is
-// present.
 func waitResponseEvent(t *testing.T, c *container, serverID, wantID string, timeout time.Duration) eventView {
 	t.Helper()
 	var found eventView
@@ -171,7 +167,6 @@ func assertKeylessContainerClean(t *testing.T, c *container) {
 	}
 }
 
-// sessionIDFromResult decodes the required sessionId from a session/new result.
 func sessionIDFromResult(t *testing.T, c *container, env rpcEnvelope, operation string) string {
 	t.Helper()
 	var result struct {
@@ -183,10 +178,8 @@ func sessionIDFromResult(t *testing.T, c *container, env rpcEnvelope, operation 
 	return result.SessionID
 }
 
-// testClaudeKeyless covers the Claude keyless contract.
 func testClaudeKeyless(t *testing.T, image string) { testLifecycleKeyless(t, image, "claude") }
 
-// testCodexKeyless covers the Codex keyless contract.
 func testCodexKeyless(t *testing.T, image string) { testLifecycleKeyless(t, image, "codex") }
 
 // testLifecycleKeyless asserts the shared Claude/Codex contract: initialize

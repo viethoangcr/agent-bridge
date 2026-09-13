@@ -30,7 +30,6 @@ func TestACPReplayAfterRestart(t *testing.T) {
 	firstSeq := events[0].Seq
 	dbPath := b.dbPath
 
-	// Replay live through SSE from an exact int64 sequence.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	replayed, err := b.sse(ctx, "replay", strconv.FormatInt(firstSeq, 10), len(events)-1)
 	cancel()
@@ -43,7 +42,6 @@ func TestACPReplayAfterRestart(t *testing.T) {
 
 	b.stop()
 
-	// Restart the bridge on the same database; persisted events replay again.
 	restarted := startBridge(t, bridgeOptions{env: map[string]string{"AGENT_BRIDGE_DB": dbPath}})
 	defer restarted.stop()
 	replayed, err = restarted.sse(ctx2(t), "replay", "0", len(events))

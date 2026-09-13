@@ -20,19 +20,26 @@ const (
 type ClientKind string
 
 const (
-	ClientRequest      ClientKind = "request"
+	// ClientRequest is a JSON-RPC request carrying both method and id.
+	ClientRequest ClientKind = "request"
+	// ClientNotification is a JSON-RPC notification carrying a method and no id.
 	ClientNotification ClientKind = "notification"
-	ClientResponse     ClientKind = "response"
+	// ClientResponse is a JSON-RPC response carrying an id and exactly one of
+	// result or error.
+	ClientResponse ClientKind = "response"
 )
 
-// Pending is the bounded metadata classified from a client envelope. ID is the
-// raw ID token (nil for notifications); Lifecycle, SessionID, and CWD are
-// request-only correlation metadata.
+// Pending is the bounded metadata classified from a client envelope.
 type Pending struct {
-	ID        json.RawMessage
+	// ID is the bounded raw JSON-RPC ID token, or nil for a notification. It is
+	// copied and never aliases the client payload.
+	ID json.RawMessage
+	// Lifecycle is the lifecycle kind of a session request, or LifecycleNone.
 	Lifecycle Lifecycle
+	// SessionID is the bounded session ID of a session-scoped request, if any.
 	SessionID *string
-	CWD       *string
+	// CWD is the bounded working directory of a lifecycle request, if any.
+	CWD *string
 }
 
 // ClassifyClientEnvelope reports the kind and bounded metadata of one client
@@ -101,8 +108,6 @@ func ClassifyClientEnvelope(payload json.RawMessage) (ClientKind, Pending, error
 	return kind, pending, nil
 }
 
-// requireJSONRPC20 enforces the JSON-RPC 2.0 version member on every client
-// envelope. A missing, non-string, or non-"2.0" value is invalid.
 func requireJSONRPC20(raw json.RawMessage) error {
 	if len(raw) == 0 {
 		return invalidEnvelope("jsonrpc is missing")
@@ -193,7 +198,6 @@ func idKey(id json.RawMessage) (string, error) {
 	return canonicalNumber(id)
 }
 
-// canonicalNumber returns the canonical key of one raw JSON number token.
 func canonicalNumber(raw []byte) (string, error) {
 	i := 0
 	neg, i, err := parseNumberSign(raw, i)
@@ -218,8 +222,6 @@ func canonicalNumber(raw []byte) (string, error) {
 	return canonicalNumberKey(raw, neg, intStart, fracStart, fracEnd, exp), nil
 }
 
-// parseNumberSign consumes an optional leading minus and rejects a sign with no
-// following digits.
 func parseNumberSign(raw []byte, i int) (neg bool, next int, err error) {
 	if i < len(raw) && raw[i] == '-' {
 		i++
@@ -231,8 +233,6 @@ func parseNumberSign(raw []byte, i int) (neg bool, next int, err error) {
 	return false, i, nil
 }
 
-// parseIntegerDigits consumes the mandatory integer part and rejects a leading
-// zero in a multi-digit run.
 func parseIntegerDigits(raw []byte, i int) (start, next int, err error) {
 	start = i
 	for i < len(raw) && isDigit(raw[i]) {
@@ -247,8 +247,6 @@ func parseIntegerDigits(raw []byte, i int) (start, next int, err error) {
 	return start, i, nil
 }
 
-// parseFraction consumes an optional fractional part and rejects an empty
-// fraction. When absent, start and end both equal the current index.
 func parseFraction(raw []byte, i int) (start, end, next int, err error) {
 	start, end = i, i
 	if i < len(raw) && raw[i] == '.' {

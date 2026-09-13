@@ -22,9 +22,6 @@ func TestProxyDeleteUnknownServer(t *testing.T) {
 	}
 }
 
-// TestProxyDeleteRemovesDurableStateAndClosesSubscriptions proves the happy
-// path prunes server/session/event rows, removes the live instance, closes the
-// subscription, and permits a fresh first POST with a newly supplied agent.
 func TestProxyDeleteRemovesDurableStateAndClosesSubscriptions(t *testing.T) {
 	f := newTestFactory(t)
 	f.setOnCreate(liveOnCreate)

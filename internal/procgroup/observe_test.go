@@ -89,8 +89,6 @@ func requireLinux(t *testing.T) {
 	}
 }
 
-// processState reads the state character from /proc/<pid>/stat after the
-// parenthesized command, reporting false when the process is gone.
 func processState(pid int) (byte, bool) {
 	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
 	if err != nil {

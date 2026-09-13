@@ -68,15 +68,12 @@ func (p *Proxy) takeRetainedStderr(serverID string) string {
 	return stderr
 }
 
-// clearRetainedStderr releases a retained tail when a new generation supersedes
-// it or its server is deleted.
 func (p *Proxy) clearRetainedStderr(serverID string) {
 	p.mu.Lock()
 	delete(p.retainedStderr, serverID)
 	p.mu.Unlock()
 }
 
-// isDeleting reports whether serverID's durable row is mid-prune.
 func (p *Proxy) isDeleting(serverID string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -102,14 +99,12 @@ func (p *Proxy) clearDeleting(serverID string) {
 	p.mu.Unlock()
 }
 
-// lookupLive returns the current instance for serverID, if any.
 func (p *Proxy) lookupLive(serverID string) *instance {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.live[serverID]
 }
 
-// reserveLive inserts inst into the live map if the fixed capacity allows.
 func (p *Proxy) reserveLive(inst *instance) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()

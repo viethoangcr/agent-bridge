@@ -202,7 +202,6 @@ func (m *Manager) prepareRun(ctx context.Context, req RunRequest) (*runPlan, err
 	}, nil
 }
 
-// closeReads closes both capture read ends. It is the caller's deferred cleanup.
 func (p *runPlan) closeReads() {
 	closePipe(p.stdoutR)
 	closePipe(p.stderrR)
@@ -353,24 +352,17 @@ func finishRun(ctx context.Context, plan *runPlan, outcome runOutcome, started t
 	return result, nil
 }
 
-// Run executes one bounded one-shot command with null stdin, two output pipes,
-// and an independent process group. It snapshots the active configuration once,
-// validates requested timeout/output caps against the active maxima, and
-// atomically reserves one shared process slot plus a checked
-// runPeakMultiplier*effectiveMaxOutputBytes peak before spawning. Insufficient
-// capacity is ErrCapacity with no partial reservation and no spawn.
-//
-// Both streams are captured concurrently up to their own effective cap while
-// the remainder is drained and discarded. cmd.Wait races the requested timeout
-// and the caller context; a timeout or cancellation SIGKILLs the captured
-// negative PGID and always reaps the direct child. The sole waiter observes the
-// direct child's exit unreaped (Linux), SIGKILLs the captured group and marks
-// it exited under the group's signal gate while the zombie still owns the PID,
-// and only then reaps the child with cmd.Wait, before publishing the result or
-// joining captures. Descendants therefore cannot hold the inherited pipes open
-// and no external signal path can ever target a recycled PGID. Platforms
-// without an unreaped observation switch the gate to direct-only before reaping
-// and send no post-reap group signal, so descendant cleanup is best-effort.
+// Run executes one bounded one-shot command with null stdin and an independent
+// process group. It snapshots the active configuration once, validates the
+// requested timeout and output caps against the active maxima without clamping,
+// and atomically reserves one shared process slot plus a checked peak before
+// spawning; insufficient capacity is ErrCapacity with no partial reservation
+// and no spawn. Both streams are captured concurrently up to their own
+// effective cap while the remainder is drained and discarded, so a child
+// writing beyond its cap cannot deadlock on a full pipe. A requested timeout or
+// a cancelled context terminates the run: a timeout is reported as TimedOut on
+// the result, while a non-timeout cancellation is ErrGateway. Invalid input is
+// ErrValidation, and a spawn or wait failure is ErrStart or ErrGateway.
 func (m *Manager) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	plan, err := m.prepareRun(ctx, req)
 	if err != nil {

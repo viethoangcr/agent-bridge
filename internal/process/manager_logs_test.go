@@ -8,8 +8,6 @@ import (
 	"testing"
 )
 
-// --- Task 4.4: pump and query managed logs ---
-
 // newTestManagerWithLogBudget returns a manager with an injected aggregate
 // retained-log budget so charged-memory eviction can be exercised with small
 // allocations.

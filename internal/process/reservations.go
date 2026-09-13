@@ -1,6 +1,5 @@
 package process
 
-// isClosing reports whether the manager has been marked closing.
 func (m *Manager) isClosing() bool {
 	m.reserveMu.Lock()
 	defer m.reserveMu.Unlock()

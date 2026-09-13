@@ -1,5 +1,5 @@
-// Package projectconfig validates and atomically replaces the per-project MCP
-// and skills configuration files under
+// Package projectconfig reads, validates, and atomically replaces the
+// per-project MCP and skills config files at
 // {resolved directory}/.agent-bridge/config/{mcp,skills}.json.
 package projectconfig
 
@@ -26,9 +26,12 @@ const (
 
 // MCPServer is one MCP server entry in the mcp.json object.
 type MCPServer struct {
-	Command string            `json:"command"`
-	Args    []string          `json:"args,omitempty"`
-	Env     map[string]string `json:"env,omitempty"`
+	// Command is the executable to launch and must be non-empty.
+	Command string `json:"command"`
+	// Args is the optional argument vector; nil and empty slices are omitted.
+	Args []string `json:"args,omitempty"`
+	// Env is the optional environment additions; nil and empty maps are omitted.
+	Env map[string]string `json:"env,omitempty"`
 }
 
 // mcpServerWire captures the optional args and env fields as raw JSON so an
@@ -49,12 +52,15 @@ type Service struct {
 }
 
 // New constructs a Service from the shared path resolver and mutation mutex.
+// Callers must pass the same mutex the filesystem service uses so config
+// writes serialize with every other bridge-originated filesystem mutation.
 func New(files *filesystem.Service, mutations *sync.Mutex) *Service {
 	return &Service{files: files, mutations: mutations}
 }
 
-// Get returns the stored config bytes, or a not_found error when the file is
-// absent.
+// Get returns the raw stored config bytes for kind and directory, or a
+// not_found error when the file is absent. The returned slice does not alias
+// service state and is safe for the caller to mutate.
 func (s *Service) Get(kind, directory string) (json.RawMessage, error) {
 	path, err := s.configPath(kind, directory)
 	if err != nil {
@@ -107,7 +113,8 @@ func (s *Service) Delete(kind, directory string) error {
 }
 
 // configPath resolves directory through the filesystem service and appends the
-// fixed config suffix. It never accepts an arbitrary filename.
+// fixed config suffix for kind. It never accepts a caller-supplied filename and
+// rejects an unsupported kind as invalid.
 func (s *Service) configPath(kind, directory string) (string, error) {
 	switch kind {
 	case mcpKind, skillsKind:
@@ -121,9 +128,6 @@ func (s *Service) configPath(kind, directory string) (string, error) {
 	return filepath.Join(resolved, configDir, configSub, kind+".json"), nil
 }
 
-// validateMCP rejects a non-object, unknown fields, empty commands, explicit
-// null optional fields, and non-string args/env, then returns canonical
-// indented JSON with a trailing newline.
 func validateMCP(body json.RawMessage) ([]byte, error) {
 	if !isJSONObject(body) {
 		return nil, invalidError("mcp config must be a JSON object")
@@ -176,8 +180,6 @@ func optionalStringMap(raw json.RawMessage, serverName string) (map[string]strin
 	return values, nil
 }
 
-// validateSkills requires a JSON object with arbitrary values and returns
-// canonical indented JSON with a trailing newline.
 func validateSkills(body json.RawMessage) ([]byte, error) {
 	if !isJSONObject(body) {
 		return nil, invalidError("skills config must be a JSON object")
@@ -189,15 +191,11 @@ func validateSkills(body json.RawMessage) ([]byte, error) {
 	return marshalCanonical(skills)
 }
 
-// isJSONObject reports whether body's first non-whitespace byte opens a JSON
-// object, rejecting null, arrays, and scalars before decoding.
 func isJSONObject(body []byte) bool {
 	trimmed := bytes.TrimLeft(body, " \t\r\n")
 	return len(trimmed) > 0 && trimmed[0] == '{'
 }
 
-// decodeStrict decodes exactly one JSON value into dst, rejecting unknown
-// struct fields and trailing values.
 func decodeStrict(body []byte, dst any) error {
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields()
@@ -210,8 +208,6 @@ func decodeStrict(body []byte, dst any) error {
 	return nil
 }
 
-// marshalCanonical serializes validated values with indentation and one
-// trailing newline.
 func marshalCanonical(v any) ([]byte, error) {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
@@ -258,7 +254,6 @@ func writeAtomic(path string, data []byte) error {
 	return syncDir(dir)
 }
 
-// syncDir flushes a directory's entries to stable storage.
 func syncDir(dir string) error {
 	handle, err := os.Open(dir)
 	if err != nil {

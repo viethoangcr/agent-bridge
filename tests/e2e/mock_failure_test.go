@@ -127,8 +127,6 @@ func testMockFailureMatrix(t *testing.T, image string) {
 	})
 }
 
-// assertSafeStderr posts initialize against a failing claude agent and asserts
-// the capped, redacted agentStderr problem extension.
 func assertSafeStderr(t *testing.T, c *container, serverID, secret string, capped bool) {
 	t.Helper()
 	body := rpc("initialize", "initialize", map[string]any{"protocolVersion": 1, "clientCapabilities": map[string]any{}})

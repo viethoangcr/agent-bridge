@@ -13,9 +13,9 @@ import (
 	"time"
 )
 
-// TestDockerMockProtocol is the focused raw-byte mock fixture. Subtests run in
-// order and each owns the containers it creates. The per-concern bodies live in
-// the sibling mock files so no file grows unbounded.
+// TestDockerMockProtocol proves the raw-byte ACP mock contract: health/token
+// gating, ACP lifecycle, the failure matrix, SSE, and REST behavior. Each
+// subtest owns the containers it creates.
 func TestDockerMockProtocol(t *testing.T) {
 	image := buildImage(t)
 
@@ -77,7 +77,6 @@ func testMockMissingToken(t *testing.T, image string) {
 	}
 }
 
-// asExitError unwraps an *exec.ExitError without importing errors in the test.
 func asExitError(err error, target **exec.ExitError) bool {
 	exitErr, ok := err.(*exec.ExitError)
 	if ok {

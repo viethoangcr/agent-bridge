@@ -1,7 +1,5 @@
-// Package acpproxy owns the live lifecycle of ACP server runtimes: per-server
-// creation and recreation, activity leasing, capacity admission, and (in later
-// tasks) subscriptions, reaping, deletion, and shutdown. It delegates all
-// protocol, persistence, and subprocess mechanics to Phase 02.
+// Package acpproxy manages live ACP runtime creation, admission, subscriptions,
+// reaping, deletion, and shutdown.
 package acpproxy
 
 import (
@@ -27,8 +25,8 @@ var (
 	// ErrReinitialize reports a request to an exited server that is not
 	// initialize.
 	ErrReinitialize = errors.New("exited server requires initialize")
-	// ErrDeleting reports a server whose lifecycle has been gated for deletion
-	// or shutdown.
+	// ErrDeleting reports a server whose lifecycle is gated for deletion, or an
+	// activity lease refused on a gated or still-creating instance.
 	ErrDeleting = errors.New("server is deleting")
 	// ErrClosed reports a POST during proxy shutdown.
 	ErrClosed = errors.New("proxy is shutting down")
@@ -47,10 +45,10 @@ const initializeMethod = "initialize"
 // failed DELETE can never permanently consume runtime capacity.
 const retireLeaseBound = 30 * time.Second
 
-// runtime is the narrow Phase 02 subprocess surface the proxy consumes. Kill
-// signals the captured process group and waits for the process and its pumps;
-// Wait is the idempotent completion confirmation. Stderr exposes the redacted
-// tail consulted for 502 problem extensions.
+// runtime is the narrow subprocess surface the proxy consumes. Kill signals
+// the direct child and waits while the sole waiter performs safe group cleanup;
+// Wait confirms completion. Stderr exposes the redacted tail consulted for 502
+// problem extensions.
 type runtime interface {
 	Post(ctx context.Context, payload json.RawMessage) (acpruntime.PostResult, error)
 	Events() <-chan struct{}
@@ -66,7 +64,9 @@ type runtimeFactory func(ctx context.Context, store *acpstore.Store, serverID st
 
 // Proxy is the per-server lifecycle owner. It keeps at most maxLiveRuntimes
 // live instances and serializes creation, recreation, and termination per
-// server ID with a keyed lifecycle lock.
+// server ID with a keyed lifecycle lock. Every exported method is safe for
+// concurrent use; Shutdown owns terminal closure and refuses new work once it
+// starts.
 type Proxy struct {
 	store          *acpstore.Store
 	resolver       acpruntime.Resolver
@@ -176,7 +176,9 @@ type Proxy struct {
 	closed atomic.Bool
 }
 
-// New constructs a production Proxy bound to acpruntime.Start.
+// New constructs a production Proxy bound to acpruntime.Start. The caller
+// retains ownership of store and resolver; the Proxy only calls them. A nil log
+// discards log records.
 func New(store *acpstore.Store, resolver acpruntime.Resolver, requestTimeout, idleTTL time.Duration, log *slog.Logger) *Proxy {
 	return newWithFactory(store, resolver, requestTimeout, idleTTL, log,
 		func(ctx context.Context, store *acpstore.Store, serverID string, spec acpruntime.LaunchSpec, requestTimeout time.Duration, log *slog.Logger) (runtime, error) {
@@ -184,7 +186,6 @@ func New(store *acpstore.Store, resolver acpruntime.Resolver, requestTimeout, id
 		})
 }
 
-// newWithFactory constructs a Proxy with an injected runtime factory.
 func newWithFactory(store *acpstore.Store, resolver acpruntime.Resolver, requestTimeout, idleTTL time.Duration, log *slog.Logger, factory runtimeFactory) *Proxy {
 	if log == nil {
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))

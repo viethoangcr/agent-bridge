@@ -7,8 +7,8 @@ import (
 	"time"
 )
 
-// Exported typed/sentinel errors that Phase 03 maps to HTTP statuses. The
-// runtime never surfaces a raw internal error through Post.
+// Sentinels the HTTP layer maps to problem responses. The runtime never
+// surfaces a raw internal error through Post.
 var (
 	// ErrInvalidEnvelope reports a client payload that is not one of the three
 	// authoritative client envelope forms or exceeds a bounded ID/session limit.
@@ -38,23 +38,28 @@ var (
 	ErrPersistence = errors.New("acpruntime: persistence failure")
 )
 
-// PostResult is the outcome of one client post: a matched response body or an
-// accepted (notification/client response) acknowledgement.
+// PostResult is the outcome of one client post: either a matched response body
+// or an accepted acknowledgement.
 type PostResult struct {
+	// Response is the matching agent response body. It is set only when
+	// Accepted is false.
 	Response json.RawMessage
+	// Accepted reports that the envelope needed no response and its record was
+	// written. It is true only when Response is nil.
 	Accepted bool
 }
 
 // Post validates payload as one client envelope and forwards it to the agent.
-// Only ClassifyClientEnvelope validates client envelopes; the invalid corpus is
-// rejected with ErrInvalidEnvelope before any reservation or stdin write.
+// Invalid envelopes are rejected with ErrInvalidEnvelope before any write.
 //
-// Every envelope enters the same capacity-256 writer queue under the configured
-// deadline. A request first reserves one correlation slot (rejecting duplicate
-// canonical IDs and overflow with ErrDuplicateID/ErrCapacity), which reconciles
-// durable status to busy. Notifications and client responses reserve no
-// correlation. A request is answered only after its matching agent response is
-// committed to SQLite.
+// A notification or client response is acknowledged once its record is written.
+// A request reserves one bounded correlation slot, rejecting duplicate IDs with
+// ErrDuplicateID and exhaustion with ErrCapacity, and is answered only after its
+// matching agent response is committed to durable storage. The configured
+// request timeout bounds every envelope and returns ErrRequestTimeout; caller
+// cancellation returns ctx.Err(). A written lifecycle request that times out
+// keeps its correlation through the grace window so a late response still
+// commits.
 func (r *Runtime) Post(ctx context.Context, payload json.RawMessage) (PostResult, error) {
 	kind, pending, err := ClassifyClientEnvelope(payload)
 	if err != nil {

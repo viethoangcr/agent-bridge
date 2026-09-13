@@ -101,7 +101,6 @@ func testMockSSE(t *testing.T, image string) {
 	}
 	closed := make(chan error, 1)
 	go func() {
-		// Read until the hard close terminates the stream.
 		for {
 			event, err := delStream.next()
 			if err != nil {

@@ -58,8 +58,9 @@ func assertChildEnvContract(t *testing.T, image string) {
 	}
 }
 
-// waitFileKeys polls for a container file that holds one variable name per
-// line and returns the set. Only names are read and reported.
+// waitFileKeys polls with a bounded window for the asynchronously spawned
+// child to hand off a file of variable names, then returns the name set.
+// Only names are read and reported.
 func waitFileKeys(t *testing.T, c *container, path string) map[string]bool {
 	t.Helper()
 	deadline := time.Now().Add(15 * time.Second)

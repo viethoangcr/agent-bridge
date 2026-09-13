@@ -1,11 +1,3 @@
-// Package filesystem provides safe path resolution and deterministic metadata
-// for the bridge's /v1/fs endpoints. Paths resolve under a HOME captured once
-// at construction; absolute paths are used directly after filepath.Clean.
-//
-// The service is deliberately lexical: it rejects raw relative parent
-// components before any cleaning and never treats path checks as confinement.
-// The sandbox itself is the security boundary. The injected mutation mutex
-// serializes bridge-originated writes once mutation methods are added.
 package filesystem
 
 import (
@@ -45,8 +37,8 @@ type PathResult struct {
 }
 
 // Service resolves paths and reports metadata from a HOME captured at
-// construction. Concrete methods are safe for concurrent reads; future
-// mutation methods serialize through mutations.
+// construction. Concrete methods are safe for concurrent reads; mutations
+// serialize through the shared mutation mutex.
 type Service struct {
 	home          string
 	mutations     *sync.Mutex
@@ -55,8 +47,9 @@ type Service struct {
 }
 
 // New captures home for the lifetime of the service. An empty home is allowed;
-// only non-empty relative paths then fail resolution. Upload limits default to
-// the production constants and are overridable only inside the package.
+// only non-empty relative paths then fail resolution. mutations must be non-nil
+// and shared by every service that needs cross-service serialization of writes.
+// Upload limits default to the production constants.
 func New(home string, mutations *sync.Mutex) (*Service, error) {
 	return &Service{
 		home:          home,

@@ -1,21 +1,3 @@
-// Package mockagent implements the private, deterministic ACP JSONL mock
-// agent. It is reachable only through the private
-// AGENT_BRIDGE_INTERNAL_MOCK_AGENT=1 dispatch in internal/app and keeps all
-// state in process memory. It is not a public protocol compatibility promise,
-// persisted store, CLI, or HTTP feature.
-//
-// Private wire-level control hooks (undocumented, not a public contract, shared
-// with later-phase integration tests):
-//
-//	_mock/delay           request {"ms":<int>}       sleeps, then replies {}
-//	_mock/invalid_stdout  request {"line":"<raw>"}   writes one malformed stdout line, then replies {}
-//	_mock/stderr          request {"line":"<raw>"}   writes one stderr line, then replies {}
-//	_mock/exit            request                    replies {} then stops the loop cleanly
-//
-// A session/prompt whose prompt content contains the literal
-// "[mock:request_permission]" emits a session/request_permission reverse-call
-// and withholds the prompt response until a client response echoes the exact
-// reverse-call id.
 package mockagent
 
 import (
@@ -66,9 +48,9 @@ type rpcError struct {
 	Message string `json:"message"`
 }
 
-// Run serves the strict mock ACP JSONL loop until EOF or ctx cancellation,
-// returning nil on either clean exit and a write error if the output stream
-// fails.
+// Run serves the private ACP JSONL mock until EOF, cancellation, or the exit
+// control. EOF and cancellation return nil; input and output failures are
+// returned.
 func Run(ctx context.Context, in io.Reader, out, errOut io.Writer) error {
 	lines, readErr, cleanup := readLines(in)
 	defer cleanup()
