@@ -631,6 +631,22 @@ file bin/agent-bridge
 go list -m -f '{{if not .Indirect}}{{.Path}}{{end}}' all
 ```
 
+## Post-Refactor Layout (2026-09-13)
+
+The code-quality audit (PR #9) preserved behavior but split long files and moved shared process primitives; the task `**Files:**` entries above are historical. Current locations:
+
+| Historical reference | Current |
+|---|---|
+| `internal/acpruntime/runtime.go` | `runtime.go`, `process.go`, `terminal.go`, `status.go` |
+| `internal/acpruntime/output.go` | `output.go`, `output_classify.go`, `jsonl.go` |
+| `internal/acpruntime/observe_linux.go` / `observe_other.go` / `observe_test.go` | `internal/procgroup/` (shared with `internal/process`) |
+| `internal/app/app.go`, `internal/app/app_test.go` | as documented in the Phase 01 post-refactor section |
+
+Behavioral deltas from the audit:
+
+- External `Runtime.Kill` kills only the direct child through the race-safe `os.Process` handle; the waiter remains the sole negative-PGID signaler and only while the child is unreaped (blocking `waitid`), with fallback marking exited without any post-reap group signal (best-effort descendant cleanup).
+- `acpstore.SessionMutation.Lifecycle` was removed; the store no longer classifies `new|load|resume` because `acpruntime` owns that classification.
+
 ## Open Questions
 
 - None for implementation. Task 2.1 uses the authoritative `modernc.org/sqlite` v1.57.0 pin. Orchestrator token and persistence-lifetime questions remain in the authoritative specification.

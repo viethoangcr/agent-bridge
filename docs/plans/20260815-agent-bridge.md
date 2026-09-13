@@ -178,7 +178,7 @@ flowchart LR
 
 ## Implementation Plans
 
-Execute in numeric order except phases 04 and 05 may implement their isolated packages (04 Tasks 4.1-4.6; 05 Tasks 5.1-5.4 and 5.6) after phase 01 in parallel with phases 02-03. Tasks that extend shared `httpapi.Dependencies`, `internal/httpapi/server.go`, or `internal/app/app.go` (04 Tasks 4.7-4.9; 05 Tasks 5.5 and 5.7) require Phase 03 completion. Phase 06 begins with an explicit integration task that owns the final `httpapi.Dependencies`, `internal/app` construction, route composition, and staged cleanup order before image work.
+Execute in numeric order except phases 04 and 05 may implement their isolated packages (04 Tasks 4.1-4.6; 05 Tasks 5.1-5.4 and 5.6) after phase 01 in parallel with phases 02-03. Tasks that extend shared `httpapi.Dependencies`, `internal/httpapi/server.go`, or `internal/app` (`app.go`, `shutdown.go`, `pidfile.go`) — 04 Tasks 4.7-4.9 and 05 Tasks 5.5 and 5.7 — require Phase 03 completion. Phase 06 begins with an explicit integration task that owns the final `httpapi.Dependencies`, `internal/app` construction, route composition, and staged cleanup order before image work.
 
 1. [Phase 01: Scaffolding and server foundation](20260823-01-scaffolding.md)
 2. [Phase 02: ACP persistence and stdio runtime](20260823-02-acp-persistence-runtime.md)

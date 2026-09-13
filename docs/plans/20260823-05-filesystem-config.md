@@ -425,6 +425,23 @@ Phase 05's isolated package tasks (5.1-5.4 and 5.6) may execute after Phase 01 i
 - [x] One application-injected mutation lock serializes all bridge file/config mutations; tests and documentation make no protection claim against arbitrary commands or external OS mutation.
 - [x] `go vet ./...`, `go test ./... -count=1`, and the `CGO_ENABLED=0` build pass.
 
+## Post-Refactor Layout (2026-09-13)
+
+The code-quality audit (PR #9) preserved behavior but split long files and tightened PUT semantics; the task `**Files:**` entries above are historical. Current locations:
+
+| Historical reference | Current |
+|---|---|
+| `internal/filesystem/service.go` | `service.go`, `metadata.go`, `mutations.go`, `errors.go` |
+| `internal/filesystem/upload_test.go` | `upload_validation_test.go`, `upload_limits_test.go`, `upload_integration_test.go`, `upload_helpers_test.go` |
+| `internal/filesystem/upload_merge_test.go` | `upload_merge_preflight_test.go`, `upload_merge_test.go` |
+| `internal/projectconfig/service_test.go` | `service_test.go`, `atomic_test.go` |
+| `internal/app/app.go`, `internal/app/app_test.go` | as documented in the Phase 01 post-refactor section |
+
+Behavioral deltas from the audit:
+
+- `WriteFile` now rejects non-regular destinations (directories, symlinks) with the documented conflict error and leaves them untouched; regular overwrites remain failure-atomic, matching the upload regular-file-only rule.
+- `filesystem.MaxFileBytes` owns the 512 MiB limit and `httpapi` derives its wire limits from it.
+
 ## Open Questions
 
 - None.

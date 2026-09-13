@@ -356,6 +356,25 @@ flowchart LR
 - [x] Reaper may wait for activity, but DELETE/shutdown gate and signal-and-wait kill immediately before waiting leases. Partial DELETE prune failure leaves an exited durable row and closed SSE, returns 500, and retries without process restart.
 - [x] Pre-drain `Kill` has already waited process/pumps before HTTP drain; post-drain `Wait` is idempotent confirmation before DB checkpoint/close.
 
+## Post-Refactor Layout (2026-09-13)
+
+The code-quality audit (PR #9) preserved behavior but split long files; the task `**Files:**` entries above are historical. Current locations:
+
+| Historical reference | Current |
+|---|---|
+| `internal/acpproxy/proxy.go` | `proxy.go`, `instance.go`, `creation.go`, `registry.go`, `delete.go`, `shutdown.go`, `failure.go` |
+| `internal/acpproxy/proxy_test.go` | `helpers_test.go` plus `creation_test.go`, `creation_failure_test.go`, `creation_retained_test.go`, `post_test.go`, `delete_test.go`, `shutdown_test.go`, `observation_test.go`, `persistence_test.go`, `reaper_failure_test.go` |
+| `internal/acpproxy/subscription_test.go` | `subscription_helpers_test.go`, `subscription_replay_test.go`, `subscription_lifecycle_test.go` |
+| `internal/httpapi/acp.go` | `acp_routes.go`, `acp_sse.go`, `acp_post.go`, `acp_state.go` (generic handling moved to `problem.go`, `body.go`, `query.go`) |
+| `internal/httpapi/acp_test.go`, `acp_sse_test.go` | `acp_post_test.go`, `acp_state_test.go`, `acp_sse_test.go`, `acp_delete_test.go`, `acp_fakes_test.go`, `acp_helpers_test.go` |
+| `internal/app/app.go`, `internal/app/app_test.go` | as documented in the Phase 01 post-refactor section |
+
+Behavioral deltas from the audit:
+
+- Failed teardown kills no longer drop ownership: retained instances stay non-replaceable and reaper-retryable, and shutdown retries them.
+- Waiters on a failed, unreplaced generation inherit the recorded creation error.
+- `Dependencies.ACP` is one compile-time interface; the `ACPSubscriber`/`ACPDeleter` runtime assertions and their 503 branches were removed.
+
 ## Open Questions
 
 - None for implementation. Use the concrete Phase 02 `Runtime.Post` result/error declarations produced by that phase and map them without wrappers.

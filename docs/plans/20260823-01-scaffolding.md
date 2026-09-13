@@ -463,6 +463,15 @@ make build
 file bin/agent-bridge
 ```
 
+## Post-Refactor Layout (2026-09-13)
+
+The code-quality audit (PR #9) preserved behavior but split long files; the task `**Files:**` entries above are historical. Current locations:
+
+| Historical reference | Current |
+|---|---|
+| `internal/app/app.go` | `internal/app/app.go` + `shutdown.go` + `pidfile.go`; a private per-run options seam replaces the `newACPProxy`/`shutdownGrace` package globals |
+| `internal/app/app_test.go` | `internal/app/helpers_test.go`, `wiring_test.go`, `shutdown_test.go`, `acp_shutdown_test.go`, `sse_shutdown_test.go`, `run_test.go`, `routes_test.go`, `pidfile_test.go` |
+
 ## Open Questions
 
 - None for implementation. The orchestrator/token and persistence-lifetime questions remain owned by the authoritative specification and do not block this phase.
