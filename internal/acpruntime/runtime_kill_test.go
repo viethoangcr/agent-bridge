@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"syscall"
 	"testing"
 	"time"
@@ -96,7 +98,7 @@ func TestRuntimeKillInterleavedWithReapDoesNotSignalReusedGroup(t *testing.T) {
 	r, _, pidPath := startHelperRuntimeHooked(t, helperProcessGroup, time.Minute, func() {
 		close(entered)
 		<-release
-	})
+	}, nil)
 	pids := readHelperPIDs(t, pidPath)
 	cleanupReportedPIDs(t, pids)
 
@@ -126,6 +128,75 @@ func TestRuntimeKillInterleavedWithReapDoesNotSignalReusedGroup(t *testing.T) {
 	_ = r.Wait()
 	if state, ok := processState(unrelated); !ok || state == 'Z' {
 		t.Fatalf("unrelated group process %d state = %q (present %v), want alive after the interleaved Kill", unrelated, state, ok)
+	}
+}
+
+// TestRuntimeFallbackReapSerializesWithKill forces the fallback (no unreaped
+// exit observation) waiter path and proves its reap is serialized with external
+// signaling. The gate's captured PGID is pointed at a live unrelated group, so
+// any signal that sneaks in between reap and the gate mark kills it. While the
+// fallback waiter holds the gate across cmd.Wait, a concurrent Kill cannot
+// signal: it blocks until reap and the mark complete and then observes exited
+// and no-ops, so the unrelated group survives.
+func TestRuntimeFallbackReapSerializesWithKill(t *testing.T) {
+	requireLinux(t)
+	unrelated := startUnrelatedProcessGroup(t)
+
+	store := newRuntimeStore(t)
+	pidPath := filepath.Join(t.TempDir(), "helper-pids.json")
+	env := withEnv(os.Environ(), helperEnv, helperProcessGroup)
+	env = withEnv(env, helperPIDFileEnv, pidPath)
+	spec := LaunchSpec{Program: os.Args[0], Env: env}
+
+	r, err := start(t.Context(), store, "srv", spec, time.Minute, testLogger(), nil, func(r *Runtime, _ int) bool {
+		// Simulate the kernel recycling the reaped child's PGID for the live
+		// unrelated group before the fallback wait begins.
+		r.pgid.Store(int64(unrelated))
+		return false
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	pids := readHelperPIDs(t, pidPath)
+	cleanupReportedPIDs(t, pids)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = r.Kill(ctx)
+	})
+
+	// Wait, bounded, until the fallback waiter holds the gate across its reap.
+	// The fixed code acquires the gate before cmd.Wait; the old code never holds
+	// it across the reap, so the deadline simply expires.
+	deadline := time.Now().Add(time.Second)
+	for r.pgid.mu.TryLock() {
+		r.pgid.mu.Unlock()
+		if time.Now().After(deadline) {
+			break
+		}
+		runtime.Gosched()
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	killDone := make(chan error, 1)
+	go func() { killDone <- r.Kill(ctx) }()
+
+	// Release the direct child so the fallback reap can finish; the fixed
+	// waiter reaps, marks the gate exited, and only then lets Kill observe its
+	// no-op.
+	if err := syscall.Kill(pids.Direct, syscall.SIGKILL); err != nil {
+		t.Fatalf("kill direct child: %v", err)
+	}
+	if err := r.Wait(); err != nil {
+		t.Logf("Wait after fallback reap = %v", err)
+	}
+	if err := <-killDone; err != nil {
+		t.Fatalf("fallback Kill = %v, want nil", err)
+	}
+
+	if state, ok := processState(unrelated); !ok || state == 'Z' {
+		t.Fatalf("unrelated group process %d state = %q (present %v), want alive: fallback reap signaled a recycled PGID", unrelated, state, ok)
 	}
 }
 

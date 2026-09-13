@@ -158,12 +158,12 @@ func newRuntimeStore(t *testing.T) *acpstore.Store {
 // startHelperRuntime starts a runtime running the test binary in mode with a
 // pid file. A bounded cleanup always terminates any reported PIDs.
 func startHelperRuntime(t *testing.T, mode string, timeout time.Duration) (*Runtime, *acpstore.Store, string) {
-	return startHelperRuntimeHooked(t, mode, timeout, nil)
+	return startHelperRuntimeHooked(t, mode, timeout, nil, nil)
 }
 
 // startHelperRuntimeHooked is startHelperRuntime with the waiter's afterReap
-// test hook installed before the waiter goroutine launches.
-func startHelperRuntimeHooked(t *testing.T, mode string, timeout time.Duration, afterReap func()) (*Runtime, *acpstore.Store, string) {
+// and observeExit test hooks installed before the waiter goroutine launches.
+func startHelperRuntimeHooked(t *testing.T, mode string, timeout time.Duration, afterReap func(), observeExit func(*Runtime, int) bool) (*Runtime, *acpstore.Store, string) {
 	t.Helper()
 	store := newRuntimeStore(t)
 	pidPath := filepath.Join(t.TempDir(), "helper-pids.json")
@@ -171,7 +171,7 @@ func startHelperRuntimeHooked(t *testing.T, mode string, timeout time.Duration, 
 	env = withEnv(env, helperPIDFileEnv, pidPath)
 	spec := LaunchSpec{Program: os.Args[0], Env: env}
 
-	r, err := start(t.Context(), store, "srv", spec, timeout, testLogger(), afterReap)
+	r, err := start(t.Context(), store, "srv", spec, timeout, testLogger(), afterReap, observeExit)
 	if err != nil {
 		t.Fatalf("Start(%s): %v", mode, err)
 	}

@@ -122,6 +122,11 @@ type Runtime struct {
 	// reap-to-exit transition.
 	afterReap func()
 
+	// observeExit reports whether the direct child's exit can be peeked without
+	// reaping. It is nil in production, where procgroup.ObserveExit is used, and
+	// exists only so tests can force the fallback reap-then-mark path.
+	observeExit func(*Runtime, int) bool
+
 	// wake is the capacity-one coalesced output/termination wakeup channel.
 	// wakeMu guards the closed flag so a late signal cannot panic after finish
 	// closes the channel.
@@ -143,12 +148,12 @@ type Runtime struct {
 // after a successful spawn; any post-spawn failure kills the group and marks
 // the row exited.
 func Start(ctx context.Context, store *acpstore.Store, serverID string, spec LaunchSpec, requestTimeout time.Duration, log *slog.Logger) (*Runtime, error) {
-	return start(ctx, store, serverID, spec, requestTimeout, log, nil)
+	return start(ctx, store, serverID, spec, requestTimeout, log, nil, nil)
 }
 
-// start is Start with the test-only afterReap hook threaded through so it is
-// set before the sole waiter goroutine launches.
-func start(ctx context.Context, store *acpstore.Store, serverID string, spec LaunchSpec, requestTimeout time.Duration, log *slog.Logger, afterReap func()) (*Runtime, error) {
+// start is Start with the test-only afterReap and observeExit hooks threaded
+// through so they are set before the sole waiter goroutine launches.
+func start(ctx context.Context, store *acpstore.Store, serverID string, spec LaunchSpec, requestTimeout time.Duration, log *slog.Logger, afterReap func(), observeExit func(*Runtime, int) bool) (*Runtime, error) {
 	if requestTimeout <= 0 {
 		return nil, fmt.Errorf("acpruntime: request timeout must be positive, got %s", requestTimeout)
 	}
@@ -170,9 +175,12 @@ func start(ctx context.Context, store *acpstore.Store, serverID string, spec Lau
 
 	r := newRuntime(store, serverID, log, cmd, cancel, stdin, requestTimeout)
 	r.afterReap = afterReap
+	r.observeExit = observeExit
 	// CommandContext's default cancellation kills only the direct child;
-	// replace it with a guarded negative-PGID SIGKILL.
-	cmd.Cancel = func() error { return r.killProcessGroup() }
+	// replace it with a guarded negative-PGID SIGKILL. The non-blocking variant
+	// keeps cmd.Wait, which synchronously joins the cancellation watcher, from
+	// deadlocking on a gate the fallback waiter holds across its reap.
+	cmd.Cancel = func() error { return r.cancelProcessGroup() }
 
 	if err := cmd.Start(); err != nil {
 		cancel()
