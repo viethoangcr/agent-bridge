@@ -1,0 +1,90 @@
+# Release for agent-bridge.
+#
+# Every action is pinned to a full 40-character commit SHA; tags, branches, and
+# abbreviations are forbidden. Pushing a v* tag builds verified static Linux
+# binaries, publishes a GitHub Release with SHA256SUMS, and retags the
+# already-published merge image for the tagged commit. Pull requests never
+# reach this workflow.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  binaries:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.26.8"
+          check-latest: false
+      - name: Build, inspect, and package both architectures
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' \
+            -o /tmp/agent-bridge-amd64 ./cmd/agent-bridge
+          readelf -h /tmp/agent-bridge-amd64 | grep -q 'Advanced Micro Devices X86-64'
+          ! readelf -l /tmp/agent-bridge-amd64 | grep -q INTERP
+          ! readelf -d /tmp/agent-bridge-amd64 | grep -q NEEDED
+          tar -czf "dist/agent-bridge_${version}_linux_amd64.tar.gz" -C /tmp agent-bridge-amd64
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags='-s -w' \
+            -o /tmp/agent-bridge-arm64 ./cmd/agent-bridge
+          readelf -h /tmp/agent-bridge-arm64 | grep -q 'AArch64'
+          ! readelf -l /tmp/agent-bridge-arm64 | grep -q INTERP
+          ! readelf -d /tmp/agent-bridge-arm64 | grep -q NEEDED
+          tar -czf "dist/agent-bridge_${version}_linux_arm64.tar.gz" -C /tmp agent-bridge-arm64
+      - name: Write checksums
+        run: |
+          cd dist
+          sha256sum agent-bridge_*.tar.gz > SHA256SUMS
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          args=(--title "$GITHUB_REF_NAME" --generate-notes --verify-tag)
+          case "$GITHUB_REF_NAME" in *-*) args+=(--prerelease) ;; esac
+          gh release create "$GITHUB_REF_NAME" dist/*.tar.gz dist/SHA256SUMS "${args[@]}"
+
+  image:
+    needs: binaries
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Log in to GHCR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Retag the merge image as the release
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          major="${version%%.*}"; rest="${version#*.}"; minor="${rest%%.*}"
+          source="ghcr.io/viethoangcr/agent-bridge:sha-$(git rev-parse --short=12 HEAD)"
+          if ! docker buildx imagetools inspect "$source" >/dev/null 2>&1; then
+            echo "release source image $source is missing" >&2
+            echo "backfill it with: gh workflow run publish.yml -f ref=$(git rev-parse HEAD)" >&2
+            exit 1
+          fi
+          tags=(-t "ghcr.io/viethoangcr/agent-bridge:v${version}" \
+                -t "ghcr.io/viethoangcr/agent-bridge:${major}.${minor}" \
+                -t "ghcr.io/viethoangcr/agent-bridge:${major}")
+          case "$GITHUB_REF_NAME" in *-*) ;; *) tags+=(-t "ghcr.io/viethoangcr/agent-bridge:latest") ;; esac
+          docker buildx imagetools create "${tags[@]}" "$source"

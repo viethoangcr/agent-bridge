@@ -9,6 +9,7 @@ enforceable by review and by `internal/projectdocs`.
 - `docs/references/go-project-layout.md` owns layout, package ownership, dependency direction, and hygiene.
 - `docs/references/go-coding-standards.md` owns behavior-level coding rules.
 - `docs/references/acp-v1-protocol.md` is the ACP v1 factual baseline.
+- `docs/references/releasing.md` owns the release contract: versioning, tags, publishing triggers, image and artifact names, and rollback.
 - Update the owning document before the change and flag conflicts instead of silently deviating.
 
 ## Dependencies and platform

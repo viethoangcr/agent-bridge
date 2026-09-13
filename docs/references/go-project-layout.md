@@ -168,7 +168,8 @@ CGO_ENABLED=0 go build -trimpath -o bin/agent-bridge ./cmd/agent-bridge
 - Dev-time tools run through `go run pkg@version`; they never enter `go.mod`/`go.sum`.
 - `lint` and `vuln` add `-tags=e2e`; every file in the tagged package carries the tag.
 - Never modify the root `.gitignore`; never commit `bin/`, SQLite databases, WAL files, PID files, or `node_modules`.
-- CI lives in `.github/workflows/ci.yml`: full 40-character SHA action pins, read-only formatting drift detection, and staged trunk/release gates.
+- CI lives in `.github/workflows/{ci,pr,publish,release}.yml`: full 40-character SHA action pins, read-only formatting drift detection, and staged trunk/release gates.
+- Container publishing lives only in `.github/workflows/publish.yml` (gated merge to `main`) and `.github/workflows/release.yml` (`v*` tags); the release contract is owned by `docs/references/releasing.md`.
 - Behavior-level coding rules are in `docs/references/go-coding-standards.md`.
 
 ## 9. Changing the rules
@@ -182,3 +183,4 @@ CGO_ENABLED=0 go build -trimpath -o bin/agent-bridge ./cmd/agent-bridge
 - `README.md` - operator-facing contract: build, run, configuration, APIs, and limits.
 - `docs/references/go-coding-standards.md` - behavior-level coding rules (errors, concurrency, testing, performance, security).
 - `docs/references/acp-v1-protocol.md` - ACP v1 factual baseline.
+- `docs/references/releasing.md` - versioning, tags, publishing triggers, image and artifact names, release checklist, rollback, and repository settings.
