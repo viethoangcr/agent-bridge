@@ -247,8 +247,14 @@ func (r *Runtime) Wait() error {
 
 // Kill sends SIGKILL to the captured negative PGID, then waits for the direct
 // child and every runtime-owned goroutine. It is idempotent and safe to call
-// concurrently or repeatedly.
+// concurrently or repeatedly. Once the runtime is terminal no signal is sent:
+// the direct child has been reaped and its PGID may have been recycled.
 func (r *Runtime) Kill(ctx context.Context) error {
+	select {
+	case <-r.done:
+		return nil
+	default:
+	}
 	if err := r.killProcessGroup(); err != nil {
 		return err
 	}
@@ -283,6 +289,9 @@ func (r *Runtime) waitProcess() {
 		r.closeTerminal()
 		_ = r.killProcessGroup()
 	}
+	// The direct child is reaped: its PID/PGID may be recycled, so clear the
+	// captured group id. No later Kill can then signal a reused group.
+	r.pgid.Store(0)
 	r.stopWriter()
 	r.closeStdin()
 	r.awaitWriterStopped()
