@@ -96,7 +96,7 @@ func TestReaperReapsIdleAtDeadline(t *testing.T) {
 		Kind:      "notification",
 		Payload:   []byte(`{"n":2}`),
 		SessionID: ptr("session-a"),
-		Mutation:  &acpstore.SessionMutation{Lifecycle: "new", SessionID: "session-a", CWD: "/tmp"},
+		Mutation:  &acpstore.SessionMutation{SessionID: "session-a", CWD: "/tmp"},
 	}); err != nil {
 		t.Fatalf("append session event: %v", err)
 	}

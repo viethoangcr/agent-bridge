@@ -43,9 +43,9 @@ type Output struct {
 }
 
 // SessionMutation is the roster and cwd change produced by a successful
-// lifecycle response. Lifecycle is one of "new", "load", or "resume".
+// lifecycle response. The runtime classifies lifecycle before building it; the
+// store only upserts the resulting session.
 type SessionMutation struct {
-	Lifecycle string
 	SessionID string
 	CWD       string
 }

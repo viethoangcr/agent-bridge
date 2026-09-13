@@ -172,12 +172,12 @@ func sessionMutation(pending pendingMeta, result json.RawMessage, hasError bool)
 		if !ok {
 			return nil
 		}
-		return &acpstore.SessionMutation{Lifecycle: string(LifecycleNew), SessionID: sessionID, CWD: boundedCWD(pending.CWD)}
+		return &acpstore.SessionMutation{SessionID: sessionID, CWD: boundedCWD(pending.CWD)}
 	case LifecycleLoad, LifecycleResume:
 		if pending.SessionID == nil {
 			return nil
 		}
-		return &acpstore.SessionMutation{Lifecycle: string(pending.Lifecycle), SessionID: *pending.SessionID, CWD: boundedCWD(pending.CWD)}
+		return &acpstore.SessionMutation{SessionID: *pending.SessionID, CWD: boundedCWD(pending.CWD)}
 	default:
 		return nil
 	}

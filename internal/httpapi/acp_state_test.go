@@ -88,7 +88,7 @@ func TestACPStatus(t *testing.T) {
 		if _, err := store.AppendOutput(ctx, "status-1", acpstore.Output{
 			Kind:     "response",
 			Payload:  []byte(`{"ok":true}`),
-			Mutation: &acpstore.SessionMutation{Lifecycle: "new", SessionID: sessionID, CWD: "/work"},
+			Mutation: &acpstore.SessionMutation{SessionID: sessionID, CWD: "/work"},
 		}); err != nil {
 			t.Fatalf("append session event: %v", err)
 		}
@@ -300,7 +300,7 @@ func TestACPEvents(t *testing.T) {
 			Kind:      "response",
 			Payload:   []byte(`{"ok":true}`),
 			SessionID: acpStrPtr("s2"),
-			Mutation:  &acpstore.SessionMutation{Lifecycle: "new", SessionID: "s2", CWD: "/work"},
+			Mutation:  &acpstore.SessionMutation{SessionID: "s2", CWD: "/work"},
 		}); err != nil {
 			t.Fatalf("create session: %v", err)
 		}

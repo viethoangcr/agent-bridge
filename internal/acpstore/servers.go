@@ -70,7 +70,8 @@ func (s *Store) Servers(ctx context.Context) ([]Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list servers: %w", err)
 	}
-	defer rows.Close()
+	// Close errors are redundant with the scan/Err checks below; ignore intentionally.
+	defer func() { _ = rows.Close() }()
 
 	var servers []Server
 	for rows.Next() {
@@ -183,7 +184,8 @@ func (s *Store) Sessions(ctx context.Context, serverID string) ([]Session, error
 	if err != nil {
 		return nil, fmt.Errorf("list sessions for server %q: %w", serverID, err)
 	}
-	defer rows.Close()
+	// Close errors are redundant with the scan/Err checks below; ignore intentionally.
+	defer func() { _ = rows.Close() }()
 
 	var sessions []Session
 	for rows.Next() {
